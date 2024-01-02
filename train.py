@@ -9,18 +9,25 @@ from dataset_generator import DataraceDataset
 from torch.utils.data import DataLoader
 from torcheval.metrics.functional import binary_recall, binary_precision, binary_accuracy
 from GNN import GNNEncoder
+from estimator import GNNEstimator
 import pickle
 import matplotlib.pyplot as plt
 import copy
 import itertools
 
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.model_selection import GridSearchCV
+
+from skopt import BayesSearchCV
+from skopt.space import Categorical
+
+import pandas as pd
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(device)
-# device= 'cpu'
 rf = open("runs_result.txt", "a+")
-def model_init(n_mp=6, n_steps=2, hidden_nodes=64, graph_inference=True):
-    with open("trans_noarith_vocabs", "rb") as f:
+with open("trans_noarith_vocabs", "rb") as f:
         vocab = pickle.load(f)
+
+def model_init(n_mp=6, n_steps=2, hidden_nodes=64, graph_inference=True):
     model = GNNEncoder(
         # Add one to the vocab size to accomodate for the out-of-vocab element.
         node_vocab_size=len(vocab) + 1,
@@ -101,6 +108,7 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
             optimizer.step()
 
             times["model_backward"] += time.time() - t1
+            exit()
             t1 = time.time()
             if i == 500:
                 break
@@ -159,6 +167,34 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
     plt.savefig("Training Stats for run {}".format(run_iter))
     return model
 
+def hyper_tuning(data_loader):
+    train_graphs = []
+    train_labels = []
+    for i, data in enumerate(data_loader):
+        if data is None:
+            continue
+        graph, label = data
+        graph = graph.to(device=device)
+        if graph.num_nodes() > 75000:
+            continue
+        label = torch.tensor(label, device=device)
+        train_graphs.append(graph)
+        train_labels.append(label)
+
+        
+    skf = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state = 1001)
+    search_space = {"predictor": ["Conv", "MLP"],
+        "n_steps": [1,2,3,4,5,6,7,8,9],
+        "n_message_passes": [1,2,3,4,5,6,7,8,9,10],
+        "num_heads": [1,2,3,4,5,6,7,8],
+        "node_hidden_size": [32, 64, 128],
+        "epochs": [45,55,65,75,85,100]
+    }
+    model_estimator = GNNEstimator(node_vocab_size=len(vocab) + 1)
+    gscv = GridSearchCV(estimator=model_estimator, param_grid=search_space)
+    gscv.fit(train_graphs, train_labels)
+    df = pd.DataFrame.from_dict(gscv.cv_results_)
+    df.to_csv("estimator_result.csv", index=false)
 
 def test(data_loader, model, cross_val=False):
     model.eval()
@@ -223,15 +259,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Simple Driver program that trains a GCN to predict the data race condition')
     parser.add_argument('-np', '--num-processes', help='Number of processes to use for training', type=int, default=0)
-    parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=4)
-    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=2)
+    parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=2)
+    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=3)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
-    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=85)
+    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=50)
     parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=10)
     parser.add_argument('-d', '--device', type=str, help='Device to use for training', default="cpu")
     parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=64)
     parser.add_argument('-i', '--graph-inference', type=bool, help='If model is doing graph inference', default=True)
     parser.add_argument('-k', '--k-fold', type=int, help='Number of k for cross validation. If k is 0, use indigo bench', default=0)
+    parser.add_argument('-ht', '--hyperparams-tuning', type=bool, help='If we want to do training or param tuning', default=False)
 
     args = parser.parse_args()
     n_steps = args.steps
@@ -241,13 +278,25 @@ if __name__ == "__main__":
     hidden_nodes = args.hidden_nodes
     graph_inference = args.graph_inference
     k = args.k_fold
+    hyperparams_tuning = args.hyperparams_tuning
 
+    train_set, test_set = data_init(graph_inference=graph_inference)
+    if hyperparams_tuning:
+        train_loader = DataLoader(
+            train_set,
+            batch_size=2,
+            shuffle=True,
+            num_workers=0,
+            collate_fn=train_set.collate_fn
+            )
+        hyper_tuning(train_loader)
+        rf.close()
+        exit()
     all_precision = []
     all_accuracy = []
     all_recall = []
     for i in range(num_runs):
         print("Begin run {}".format(i))
-        train_set, test_set = data_init(graph_inference=graph_inference)
         if k>0:
             fold_index = train_set.k_fold()
             for fold_num, fold in enumerate(fold_index):
@@ -295,6 +344,7 @@ if __name__ == "__main__":
             all_accuracy.append(accuracy)
             all_recall.append(recall)
             del trained_model, untrained_model
+    
 
     mean_precision = np.mean(all_precision)
     mean_accuracy = np.mean(all_accuracy)

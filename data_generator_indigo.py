@@ -11,9 +11,9 @@ from data_transform import ToDGLGraph
 import dgl
 
 # assign directory
-c_directory = 'Indigo_bug'
+c_directory = 'Indigo_nobug'
 ir_directory = 'llvm_ir_indigo'
-with open("trans_noarith_vocabs", "rb") as f:
+with open("trans_noarith_vocabs_O3", "rb") as f:
     current_vocab = pickle.load(f)
 
 vocab = {"text": current_vocab}
@@ -50,7 +50,7 @@ def dataset_generator(file_name, full_path):
                     IRnetx.nodes[adj]['features']['full_text'] = [new_feat]
                     IRnetx.nodes[adj]['text'] = func_name.group(1)
 
-    return IRnetx, 1
+    return IRnetx, 0
 
 dataset = []
 labels = []
@@ -64,10 +64,10 @@ for subdir in os.listdir(c_directory):
         dataset.append(graph)
         labels.append(label)
 
-labels_file = open("indigo_bug_trans_noarith_hetero_labels", "wb")
+labels_file = open("indigo_nobug_trans_noarith_O3_hetero_labels", "wb")
 pickle.dump(labels, labels_file)
 
-dgl.save_graphs("indigo_bug_trans_noarith_hetero.bin", dataset)
+dgl.save_graphs("indigo_nobug_trans_noarith_O3_hetero.bin", dataset)
 
 
 

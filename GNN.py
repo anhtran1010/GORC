@@ -6,6 +6,7 @@ import dgl
 import torch
 import torch.nn as nn
 from loss import AUCPRHingeLoss
+import math
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 class GNNEncoder(nn.Module):
@@ -22,6 +23,7 @@ class GNNEncoder(nn.Module):
             n_message_passes=0,
             reward_dim=1,
             gnn_type="GATv2Conv",
+            predictor="Conv",
             feat_drop=0.0,
             num_heads=5,
             concat_intermediate=True,
@@ -41,6 +43,7 @@ class GNNEncoder(nn.Module):
         self.concat_intermediate = concat_intermediate
         self.graph_inference = graph_inference
         self.heterograph = heterograph
+        self.predictor = predictor
         if self.use_node_embedding:
             if self.heterograph:
                 num_embeddings = {}
@@ -134,28 +137,33 @@ class GNNEncoder(nn.Module):
         # self.multihead_attention_one = nn.MultiheadAttention(embed_dim, self.num_heads)
         # self.multihead_attention_two = nn.MultiheadAttention(self.node_hidden_size, self.num_heads)
         self.output_norm = nn.Sigmoid()
+        if self.predictor == "MLP":
+            self.reward_predictor_block_one = nn.Sequential(
+                nn.LayerNorm(embed_dim),
+                nn.Dropout(p=0.3),
+                nn.Linear(embed_dim, 64),
+                nn.ReLU())
+            f_dim = 64
+        elif self.predictor == "Conv":
+            self.reward_predictor_block_one = nn.Sequential(
+                nn.Conv1d(in_channels=num_edge_type, out_channels=3, kernel_size=3),
+                nn.ReLU(),
+                nn.MaxPool1d(3, stride=2),
+                nn.Conv1d(3, 1, 1),
+                nn.ReLU(),
+                nn.MaxPool1d(2, stride=3))
 
-        self.reward_predictor_block_one = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Dropout(p=0.3),
-            nn.Linear(embed_dim, 64),
-            nn.ReLU())
-
+            conv_one_out_dim = embed_dim/num_edge_type + 2*(-1)*(3-1)
+            block_one_out_dim = int((conv_one_out_dim -1)/2) + 1
+            conv_two_out_dim = block_one_out_dim
+            f_dim = int((conv_two_out_dim -1)/3) +1
+        
         self.reward_predictor_block_two = nn.Sequential(
             # nn.BatchNorm1d(self.node_hidden_size),
-            nn.LayerNorm(64),
-            # nn.Softmax(dim=1),
-            nn.Dropout(p=0.3),
-            nn.Linear(64, 64),
-            nn.ReLU()
-        )
-
-        self.reward_predictor_block_three = nn.Sequential(
-            # nn.BatchNorm1d(self.node_hidden_size),
-            nn.LayerNorm(64),
+            nn.LayerNorm(f_dim),
             # nn.Softmax(dim=1),
             nn.Dropout(p=0.4),
-            nn.Linear(64, self.reward_dim)
+            nn.Linear(f_dim, self.reward_dim)
         )
 
         self.loss_fn = nn.BCEWithLogitsLoss()
@@ -172,7 +180,6 @@ class GNNEncoder(nn.Module):
                         intermediate[node_type] = [dgl.max_nodes(g, "feat", ntype=node_type)]
                 else:
                     intermediate = [dgl.max_nodes(g, "feat")]
-
             # if self.gnn_type == "GatedGraphConv":
             #     for i, layer in enumerate(self.ggcnn):
             #         res = layer(g, res, g.edata["flow"])
@@ -198,7 +205,6 @@ class GNNEncoder(nn.Module):
                             intermediate[key].append(dgl.max_nodes(g, "feat", ntype=key))
                     else:
                         intermediate.append(dgl.max_nodes(g, "feat"))
-                    
             for i, layer in enumerate(self.ggcnn):
                 if self.heterograph:
                     res = layer(g, res)
@@ -219,7 +225,11 @@ class GNNEncoder(nn.Module):
                         for value in intermediate.values():
                             value_cat = torch.cat(value, axis=1)
                             features.append(value_cat)
-                        aggregation = torch.cat(features, axis=1)
+                        # 
+                        if self.predictor == "MLP":
+                            aggregation = torch.cat(features, axis=1)
+                        elif self.predictor == "Conv":
+                            aggregation = torch.stack(features).transpose(0,1)
                     else:
                         aggregation = torch.cat(intermediate, axis=1)
                 else:
@@ -235,9 +245,12 @@ class GNNEncoder(nn.Module):
                 adj_mat = g.adj_external().to(dtype=torch.double, device=device)
                 res_sparse = res.to_sparse().requires_grad_()
                 aggregation = torch.sparse.mm(adj_mat, res_sparse).to_dense()
+
         res = self.reward_predictor_block_one(aggregation)
         # res = self.reward_predictor_block_two(res)
-        res = self.reward_predictor_block_three(res)
+        if self.predictor == "Conv":
+            res = torch.flatten(res, 1)
+        res = self.reward_predictor_block_two(res)
         # res = self.output_norm(res)
 
         if not self.train:

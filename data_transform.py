@@ -60,14 +60,24 @@ def fast_networkx_to_dgl(
 def fast_networkx_to_dgl_heterogeneous(graph, node_attrs=["text_idx"], edge_attrs=["position"]):
     data_dict = {}
     edge_feat_dict = {}
-    node_feat_dict = {}
-    node_type_idx = {}
+    node_feat_dict = {
+        "0": [], 
+        "1": [],
+        "2": [],
+        "3": []
+        }
+    node_type_idx = {
+        "0": 0, 
+        "1": 0,
+        "2": 0,
+        "3": 0
+        }
     nodes = graph.nodes()
     for node in nodes:
         node_type = str(nodes[node]['type'])
         if node_type in node_type_idx:
-            node_type_idx[node_type] += 1
             nodes[node]['idx'] = node_type_idx[node_type]
+            node_type_idx[node_type] += 1
         else:
             node_type_idx[node_type] = 0
             nodes[node]['idx'] = node_type_idx[node_type]
@@ -76,7 +86,7 @@ def fast_networkx_to_dgl_heterogeneous(graph, node_attrs=["text_idx"], edge_attr
             node_feat_dict[node_type].append(nodes[node]['text_idx'])
         else:
             node_feat_dict[node_type] = [nodes[node]['text_idx']]
-    
+
     for edge, position in zip(graph.edges(data="flow"), graph.edges(data="position")):
         src_node = nodes[edge[0]]
         src_node_idx = src_node['idx']
