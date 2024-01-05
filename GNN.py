@@ -25,16 +25,17 @@ class GNNEncoder(nn.Module):
             gnn_type="GraphConv",
             predictor="MLP",
             feat_drop=0.0,
-            num_heads=5,
-            concat_intermediate=True,
-            graph_inference=True
+            num_heads=4,
+            concat_intermediate=False,
+            graph_inference=True,
+            attention=True
     ):
         super(GNNEncoder, self).__init__()
 
         self.use_node_embedding = use_node_embedding
         self.node_hidden_size = node_hidden_size
         self.n_steps = n_steps
-        self.n_etypes = n_etypes
+        self.n_etypes = 1 if heterograph else n_etypes
         self.n_message_passes = n_message_passes
         self.reward_dim = reward_dim
         self.gnn_type = gnn_type
@@ -44,6 +45,7 @@ class GNNEncoder(nn.Module):
         self.graph_inference = graph_inference
         self.heterograph = heterograph
         self.predictor = predictor
+        self.attention = attention
         if self.use_node_embedding:
             if self.heterograph:
                 num_embeddings = {}
@@ -54,24 +56,7 @@ class GNNEncoder(nn.Module):
                 self.node_embedding = nn.Embedding(node_vocab_size, node_hidden_size)
 
         embed_dim = self.node_hidden_size
-        if self.num_heads != 0:
-            gat = dgl.nn.pytorch.conv.GATv2Conv(
-                    in_feats=self.node_hidden_size,
-                    out_feats=self.node_hidden_size,
-                    num_heads=self.num_heads,
-                    feat_drop=0.3,
-                    attn_drop=0.3,
-                    residual=True,
-                    activation=nn.ReLU(),
-                    allow_zero_in_degree=True,
-                )
-            if self.heterograph:
-                mods_dict = {}
-                for i in range(num_edge_type):
-                    mods_dict[str(i)] = gat 
-                self.gat = dgl.nn.HeteroGraphConv(mods_dict, aggregate='sum')
-            else:
-                self.gat = gat
+
         if self.gnn_type == "GatedGraphConv":
             conv_layer = dgl.nn.pytorch.conv.GatedGraphConv(
                   in_feats=self.node_hidden_size,
@@ -88,6 +73,17 @@ class GNNEncoder(nn.Module):
                 bias=True,
                 allow_zero_in_degree=True
             )
+        elif self.gnn_type=="GraphAttention":
+            conv_layer = dgl.nn.pytorch.conv.GATv2Conv(
+                    in_feats=self.node_hidden_size,
+                    out_feats=self.node_hidden_size,
+                    num_heads=self.num_heads,
+                    feat_drop=0.3,
+                    attn_drop=0.3,
+                    residual=True,
+                    activation=nn.ReLU(),
+                    allow_zero_in_degree=True,
+                )
         else:
           raise NotImplementedError("")
 
@@ -99,30 +95,34 @@ class GNNEncoder(nn.Module):
 
         self.ggcnn = nn.ModuleList([
             conv_layer
-            for _ in range(self.n_message_passes-1)
+            for _ in range(self.n_message_passes)
         ])
 
         if self.concat_intermediate:
             if not self.heterograph:
                 num_edge_type = 1
-            if self.num_heads == 0:
-                embed_dim = self.n_message_passes * embed_dim * num_edge_type
-            else:
-                embed_dim = (self.n_message_passes + 1) * embed_dim * num_edge_type
+            embed_dim = self.n_message_passes * embed_dim
 
-        self.dim_reduce_layer = nn.Sequential(
-                nn.Conv1d(in_channels=num_edge_type, out_channels=1, kernel_size=1),
-                nn.ReLU(),
-                nn.MaxPool1d(3, stride=2))
-        conv_reduce_dim = embed_dim/num_edge_type + 1
-        self.reduce_dim = int((conv_reduce_dim + 2*(-1)*(3-1)-1)/2) + 1
+        # self.dim_reduce_layer = nn.Sequential(
+        #         nn.Conv1d(in_channels=num_edge_type, out_channels=1, kernel_size=1),
+        #         nn.ReLU(),
+        #         nn.MaxPool1d(3, stride=2))
+        # conv_reduce_dim = embed_dim/num_edge_type + 1
+        # self.reduce_dim = int((conv_reduce_dim + 2*(-1)*(3-1)-1)/2) + 1
+        if self.attention:
+            self.attention_layer = nn.MultiheadAttention(
+                    embed_dim=embed_dim,
+                    num_heads=self.num_heads,
+                    dropout=0.3
+                )
+            self.attention_activation = nn.LeakyReLU()
 
         self.output_norm = nn.Sigmoid()
         if self.predictor == "MLP":
             self.reward_predictor_block_one = nn.Sequential(
-                nn.LayerNorm(self.reduce_dim),
+                nn.LayerNorm(embed_dim),
                 nn.Dropout(p=0.3),
-                nn.Linear(self.reduce_dim, 64),
+                nn.Linear(embed_dim, 64),
                 nn.ReLU())
             f_dim = 64
         elif self.predictor == "Conv":
@@ -134,11 +134,12 @@ class GNNEncoder(nn.Module):
                 nn.ReLU(),
                 nn.MaxPool1d(2, stride=3))
 
-            conv_one_out_dim = embed_dim/num_edge_type + 2*(-1)*(3-1)
+            conv_one_out_dim = embed_dim + 2*(-1)*(3-1)
             block_one_out_dim = int((conv_one_out_dim -1)/2) + 1
             conv_two_out_dim = block_one_out_dim
             f_dim = int((conv_two_out_dim -1)/3) +1
-        
+        else:
+            raise NotImplementedError("")
         self.reward_predictor_block_two = nn.Sequential(
             # nn.BatchNorm1d(self.node_hidden_size),
             nn.LayerNorm(f_dim),
@@ -161,25 +162,12 @@ class GNNEncoder(nn.Module):
                         intermediate[node_type] = [dgl.max_nodes(g, "feat", ntype=node_type)]
                 else:
                     intermediate = [dgl.max_nodes(g, "feat")]
-            if self.num_heads != 0:
-                res = self.gat(g, res)
-                if self.heterograph:
-                    for key in res.keys():
-                        res[key] = torch.mean(res[key], dim=1)
-                else:
-                  res = torch.mean(res, dim=1)
-                if self.concat_intermediate:
-                    g.ndata["feat"] = res
-                    if self.heterograph:
-                        for key in intermediate.keys():
-                            intermediate[key].append(dgl.max_nodes(g, "feat", ntype=key))
-                    else:
-                        intermediate.append(dgl.max_nodes(g, "feat"))
+
             for i, layer in enumerate(self.ggcnn):
                 if self.gnn_type=="GatedGraphConv":
                     if self.heterograph:
                         for node_type in g.ndata["feat"].keys():
-                            res = layer(g, res, g.edata["flow"])
+                            res = layer(g, res)
                     else:
                         res = layer(g, res, g.edata["flow"])
                 else:
@@ -199,23 +187,28 @@ class GNNEncoder(nn.Module):
                         for value in intermediate.values():
                             value_cat = torch.cat(value, axis=1)
                             features.append(value_cat)
-                        # 
+                        
                         # if self.predictor == "MLP":
                         #     aggregation = torch.cat(features, axis=1)
                         # elif self.predictor == "Conv":
                         #     aggregation = torch.stack(features).transpose(0,1)
-                        aggregation = torch.stack(features).transpose(0,1)
-                        aggregation = self.dim_reduce_layer(aggregation)
-                        aggregation = torch.flatten(aggregation, 1)
+                        if self.predictor == "MLP":
+                            # aggregation = torch.stack(features).transpose(0,1)
+                            # aggregation = self.dim_reduce_layer(aggregation)
+                            # aggregation = torch.flatten(aggregation, 1)
+                            aggregation = torch.cat(features, axis=1)
+                        elif self.predictor == "Conv":
+                            aggregation = torch.stack(features).transpose(0,1)
                     else:
                         aggregation = torch.cat(intermediate, axis=1)
                 else:
                     if self.heterograph:
-                        aggregation = []
+                        aggregation=[]
                         for key, value in g.ndata["feat"].items():
-                            node_aggregation = dgl.max_nodes(g,"feat", ntype=key)
+                            node_aggregation = dgl.sum_nodes(g,"feat", ntype=key)
                             aggregation.append(node_aggregation)
-                        aggregation = torch.cat(aggregation, axis=1)
+                        aggregation = torch.stack(aggregation).transpose(0,1)
+                        # print(aggregation.flatten(start_dim=1).shape)
                     else:
                         aggregation = dgl.max_nodes(g, "feat")
             else:
@@ -223,10 +216,17 @@ class GNNEncoder(nn.Module):
                 res_sparse = res.to_sparse().requires_grad_()
                 aggregation = torch.sparse.mm(adj_mat, res_sparse).to_dense()
 
-        res = self.reward_predictor_block_one(aggregation)
-        # res = self.reward_predictor_block_two(res)
-        if self.predictor == "Conv":
-            res = torch.flatten(res, 1)
+        if self.attention:
+            res, atten_weight = self.attention_layer(query=aggregation, key=aggregation, value=aggregation)
+            res = self.attention_activation(res)
+        else:
+            res = aggregation
+        
+        if self.predictor == "MLP":
+            res, _ = torch.max(res, dim=1)
+            res = self.reward_predictor_block_one(res)
+        else:
+            res = self.reward_predictor_block_one(res).flatten(start_dim=1)
         res = self.reward_predictor_block_two(res)
         # res = self.output_norm(res)
 

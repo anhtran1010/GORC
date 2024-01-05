@@ -18,13 +18,9 @@ ir_directory = 'llvm_ir'
 # bad_phrase = ', sysroot: "/Library/Developer/CommandLineTools/SDKs/MacOSX12.sdk", sdk: "MacOSX12.sdk"'
 # with open("vocabs", "rb") as f:
 #     current_vocab = pickle.load(f)
-with open("trans_noarith_vocabs_O3", "rb") as f:
-    current_vocab = pickle.load(f)
 
-vocab = {"text": current_vocab}
-
-# vocabs = {}
-# current_index = 0
+vocabs = {}
+current_index = 0
 
 def special_processing(ir_label_lines, graph, source_file):
     match = r'align (\d+),'
@@ -119,16 +115,26 @@ def get_label(source_file, ir_file=None, graph=None):
         labels[datarace_node] = 1
     return labels
 
+def ir_generator(file_name, optimizations):
+    source_file = os.path.join(c_directory, file_name)
+    ir_file = os.path.join(ir_directory, file_name[:-2] + ".ll")
+    if not os.path.isfile(ir_file):
+        if "cpp" in file_name:
+            os.system("/home/abtran/clang_13/bin/clang++ -I/home/abtran/clang_13/include/c++/v1 -S -emit-llvm {} -c -o {} -fopenmp=libiomp5".format(source_file, ir_file))
+        else:
+            os.system("/home/abtran/clang_13/bin/clang -S -emit-llvm {} -c -o {} -fopenmp=libiomp5"
+                  .format(source_file, ir_file))
+    
+    for level in optimizations:
+        ir_file = os.path.join(ir_directory, file_name[:-2] + "_{}.ll".format(level))
+        if not os.path.isfile(ir_file):
+            if "cpp" in file_name:
+                os.system("/home/abtran/clang_13/bin/clang++ -I/home/abtran/clang_13/include/c++/v1 -S -{} -emit-llvm {} -c -o {} -fopenmp=libiomp5".format(level, source_file, ir_file))
+            else:
+                os.system("/home/abtran/clang_13/bin/clang -S -{} -emit-llvm {} -c -o {} -fopenmp=libiomp5"
+                    .format(level, source_file, ir_file))
 
 def dataset_generator(file_name):
-    # source_file = os.path.join(c_directory, file_name)
-    # ir_file = os.path.join(ir_directory, file_name[:-2] + "_O3.ll")
-    # if not os.path.isfile(ir_file):
-    #     if "cpp" in file_name:
-    #         os.system("/home/abtran/clang_13/bin/clang++ -I/home/abtran/clang_13/include/c++/v1 -S -O3 -emit-llvm {} -c -o {} -fopenmp=libiomp5".format(source_file, ir_file))
-    #     else:
-    #         os.system("/home/abtran/clang_13/bin/clang -S -O3 -emit-llvm {} -c -o {} -fopenmp=libiomp5"
-    #               .format(source_file, ir_file))
     with open(file_name, 'r') as ir_f:
         ir = ir_f.read()
     # ir = ir.replace(bad_phrase, "")
@@ -167,31 +173,33 @@ def dataset_generator(file_name):
     # except:
     #     print("{} did not parse successfully".format(file_name))
     #     traceback.print_exc()
+for filename in os.listdir(c_directory):
+    if os.path.isfile(os.path.join(c_directory, filename)) and "signaling.h" not in filename:
+        ir_generator(filename, ["O1"])
 
 dataset = []
 labels = []
-graph_transformer = ToDGLGraph(vocab)
 for filename in os.listdir(ir_directory):
     if os.path.isfile(os.path.join(ir_directory, filename)) and "signaling.h" not in filename and "_fastmath" not in filename:   
         graph, label = dataset_generator(os.path.join(ir_directory, filename))
-        # for node in graph.nodes:
-        #     current_node = graph.nodes[node]
-        #     if current_node['text'] not in vocabs:
-        #         vocabs[current_node['text']] = current_index
-        #         current_index += 1
+        for node in graph.nodes:
+            current_node = graph.nodes[node]
+            if current_node['text'] not in vocabs:
+                vocabs[current_node['text']] = current_index
+                current_index += 1
         labels.append(label)
-        dataset.append(graph_transformer(graph))
+        dataset.append(graph)
 
-# vocab = {"text": vocabs}
+vocab = {"text": vocabs}
+graph_transformer = ToDGLGraph(vocab)
+dgl_set = [graph_transformer(graph) for graph in dataset]
 
-# dgl_set = [graph_transformer(graph) for graph in dataset]
+# labels_file = open("dataracebench_trans_noarith_O1_hetero_labels", "wb")
+# pickle.dump(labels, labels_file)
 
-labels_file = open("dataracebench_trans_noarith_O3_hetero_labels", "wb")
-pickle.dump(labels, labels_file)
+# dgl.save_graphs("dataracebench_trans_noarith_O1_hetero_graphs.bin", dgl_set)
 
-dgl.save_graphs("dataracebench_trans_noarith_O3_hetero_graphs.bin", dataset)
-
-# with open("trans_noarith_vocabs_O3", "wb") as vf:
+# with open("trans_noarith_vocabs_O1", "wb") as vf:
 #     pickle.dump(vocabs, vf)
 
 

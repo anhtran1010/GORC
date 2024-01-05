@@ -259,7 +259,7 @@ if __name__ == "__main__":
         description='Simple Driver program that trains a GCN to predict the data race condition')
     parser.add_argument('-np', '--num-processes', help='Number of processes to use for training', type=int, default=0)
     parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=2)
-    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=5)
+    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=8)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
     parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=70)
     parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=10)
