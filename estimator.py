@@ -27,17 +27,15 @@ class GNNEstimator(BaseEstimator):
     def fit(self, graphs, targets):
         for epoch in range(self.epochs):
             self.model.train()
-            for graph, label in zip(graph, target):
+            for graph, label in zip(graphs, targets):
                 graph = graph.to(device=device)
-                label = torch.tensor(label)
                 loss = self.model.get_loss(graph, label)
-                optimizer.zero_grad()
+                self.optimizer.zero_grad()
                 loss.backward()
                 grad_clip = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), max_norm=400.0
+                    self.model.parameters(), max_norm=400.0
                 )
-                epoch_grad_clip.append(grad_clip.cpu().data.numpy())
-                optimizer.step()
+                self.optimizer.step()
         return self
 
     def predict(self, X):
@@ -53,28 +51,29 @@ class GNNEstimator(BaseEstimator):
         y : ndarray, shape (n_samples,)
             Returns an array of ones.
         """
-        model.eval()
+        self.model.eval()
         output_arr = []
         for graph in X:
             graph = graph.to(device=device)
             with torch.no_grad():
-                output, _ = model(graph)
-            output = output.item().detach().cpu()
+                output, _ = self.model(graph)
+            output = output.item().detach()
             output_arr.append(output)
         output_arr = np.array(output_arr)
         return output_arr
 
     def score(self, graphs, targets):
-        self.mocel.eval()
+        self.model.eval()
         predictions = []
         truth_labels = []
         for graph, label in zip(graphs, targets):
-            truth_labels.append(torch.tensor(label))
+            truth_labels.append(label)
             with torch.no_grad():
-                output, _ = model(graph)
-            output = output.detach().cpu()
+                output, _ = self.model(graph)
+            output = output.detach()
             predictions.append(output)
         truth_labels = torch.concatenate(truth_labels)
+        predictions = torch.concatenate(predictions)
         predictions = torch.squeeze(predictions, dim=1)
         accuracy = binary_accuracy(predictions, truth_labels)
         return accuracy

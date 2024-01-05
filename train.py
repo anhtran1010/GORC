@@ -87,9 +87,9 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
             graph, labels = data
             times["get_data"] += time.time() - t1
             t1 = time.time()
-            graph = graph.to(device=device)
             if graph.num_nodes() > 75000:
                 continue
+            graph = graph.to(device=device)
             labels = torch.tensor(labels, device=device)
             if not graph_inference:
                 assert graph.num_nodes() == len(labels), "{} number of nodes is not equal to test_labels {}".format(
@@ -108,9 +108,8 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
             optimizer.step()
 
             times["model_backward"] += time.time() - t1
-            exit()
             t1 = time.time()
-            if i == 500:
+            if i == 200:
                 break
 
         # model.eval()
@@ -194,7 +193,7 @@ def hyper_tuning(data_loader):
     gscv = GridSearchCV(estimator=model_estimator, param_grid=search_space)
     gscv.fit(train_graphs, train_labels)
     df = pd.DataFrame.from_dict(gscv.cv_results_)
-    df.to_csv("estimator_result.csv", index=false)
+    df.to_csv("estimator_result.csv", index=False)
 
 def test(data_loader, model, cross_val=False):
     model.eval()
@@ -260,12 +259,12 @@ if __name__ == "__main__":
         description='Simple Driver program that trains a GCN to predict the data race condition')
     parser.add_argument('-np', '--num-processes', help='Number of processes to use for training', type=int, default=0)
     parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=2)
-    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=3)
+    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=5)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
-    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=50)
+    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=70)
     parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=10)
     parser.add_argument('-d', '--device', type=str, help='Device to use for training', default="cpu")
-    parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=64)
+    parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=32)
     parser.add_argument('-i', '--graph-inference', type=bool, help='If model is doing graph inference', default=True)
     parser.add_argument('-k', '--k-fold', type=int, help='Number of k for cross validation. If k is 0, use indigo bench', default=0)
     parser.add_argument('-ht', '--hyperparams-tuning', type=bool, help='If we want to do training or param tuning', default=False)

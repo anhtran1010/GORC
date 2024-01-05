@@ -97,19 +97,36 @@ def fast_networkx_to_dgl_heterogeneous(graph, node_attrs=["text_idx"], edge_attr
         dst_node_type = str(dst_node['type'])
         pos_type = position[-1]
         if (src_node_type, edge_type, dst_node_type) in data_dict:
-            data_dict[(src_node_type, edge_type, dst_node_type)].append((src_node_idx, dst_node_idx))
+            data_dict[(src_node_type, edge_type, dst_node_type)][0].append(src_node_idx)
+            data_dict[(src_node_type, edge_type, dst_node_type)][1].append(dst_node_idx)
             edge_feat_dict[(src_node_type, edge_type, dst_node_type)].append(pos_type)
         else:
-            data_dict[(src_node_type, edge_type, dst_node_type)] = [(src_node_idx, dst_node_idx)]
+            data_dict[(src_node_type, edge_type, dst_node_type)] = [[src_node_idx], [dst_node_idx]]
             edge_feat_dict[(src_node_type, edge_type, dst_node_type)] = [pos_type]
-    dgl_graph = dgl.heterograph(data_dict)
-    for key, value in edge_feat_dict.items():
-        edge_feat_dict[key] = torch.tensor(value)
-    dgl_graph.edata["position"] = edge_feat_dict
+
+    is_missing_type = False
+    missing_type = ""
 
     for key, value in node_feat_dict.items():
-        node_feat_dict[key] = torch.tensor(value)
+        if len(node_feat_dict[key])==0:
+            is_missing_type = True
+            missing_type = key
+            node_feat_dict[key] = [-1]
+            data_dict[("1", "0", "1")] = [[-1], [-1]]
+            edge_feat_dict[("1", "0", "1")] = [-1]
+        node_feat_dict[key] = torch.tensor(value) 
+
+    for data in data_dict:
+        data_dict[data] = tuple(data_dict[data])
+    dgl_graph = dgl.heterograph(data_dict)
+            
+    for key, value in edge_feat_dict.items():
+        edge_feat_dict[key] = torch.tensor(value)
+
+    dgl_graph.edata["position"] = edge_feat_dict
     dgl_graph.ndata["text_idx"] = node_feat_dict
+    
+    assert len(dgl_graph.ntypes)==4, "graph should have 4 node types"
     return dgl_graph
 
 def update_graph_with_vocab(graph_fn, features, vocab):

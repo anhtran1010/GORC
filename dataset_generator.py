@@ -55,6 +55,12 @@ class DataraceDataset(Dataset):
 
     def initialize_dataset(self):
         self.graphs, _ = load_graphs(self.graph_file)
+        for i in range(len(self.graphs)):
+            graph = self.graphs[i]
+            if len(graph.etypes) == 6:
+                break
+        del self.graphs[i]
+
         self.num_samples = len(self.graphs)
 
         with open(self.labels_file, 'rb') as labels_file:

@@ -22,8 +22,8 @@ class GNNEncoder(nn.Module):
             n_etypes=4,
             n_message_passes=0,
             reward_dim=1,
-            gnn_type="GATv2Conv",
-            predictor="Conv",
+            gnn_type="GraphConv",
+            predictor="MLP",
             feat_drop=0.0,
             num_heads=5,
             concat_intermediate=True,
@@ -54,37 +54,6 @@ class GNNEncoder(nn.Module):
                 self.node_embedding = nn.Embedding(node_vocab_size, node_hidden_size)
 
         embed_dim = self.node_hidden_size
-        # if self.gnn_type == "GatedGraphConv":
-        #     self.ggcnn = nn.ModuleList(
-        #         [
-        #             dgl.nn.pytorch.conv.GatedGraphConv(
-        #                 in_feats=self.node_hidden_size,
-        #                 out_feats=self.node_hidden_size,
-        #                 n_steps=self.n_steps,
-        #                 n_etypes=self.n_etypes,
-        #             )
-        #             for _ in range(self.n_message_passes)
-        #         ]
-        #     )
-
-        # elif self.gnn_type == "GATv2Conv":
-        #     self.ggcnn = nn.ModuleList(
-        #         [
-        #             dgl.nn.pytorch.conv.GATv2Conv(
-        #                 in_feats=self.node_hidden_size,
-        #                 out_feats=self.node_hidden_size,
-        #                 num_heads=self.num_heads,
-        #                 feat_drop=0.3,
-        #                 attn_drop=0.3,
-        #                 residual=True,
-        #                 activation=nn.ReLU(),
-        #                 allow_zero_in_degree=True,
-        #             )
-        #             for _ in range(self.n_message_passes)
-        #         ]
-        #     )
-        # else:
-        #     raise NotImplementedError("")
         if self.num_heads != 0:
             gat = dgl.nn.pytorch.conv.GATv2Conv(
                     in_feats=self.node_hidden_size,
@@ -103,21 +72,26 @@ class GNNEncoder(nn.Module):
                 self.gat = dgl.nn.HeteroGraphConv(mods_dict, aggregate='sum')
             else:
                 self.gat = gat
-        conv_layer = dgl.nn.pytorch.conv.GatedGraphConv(
-                in_feats=self.node_hidden_size,
-                out_feats=self.node_hidden_size,
-                n_steps=self.n_steps,
-                n_etypes=self.n_etypes,
-            )
-
-        if self.heterograph:
+        if self.gnn_type == "GatedGraphConv":
+            conv_layer = dgl.nn.pytorch.conv.GatedGraphConv(
+                  in_feats=self.node_hidden_size,
+                  out_feats=self.node_hidden_size,
+                  n_steps=self.n_steps,
+                  n_etypes=self.n_etypes,
+              )
+        elif self.gnn_type == "GraphConv":
             conv_layer = dgl.nn.pytorch.conv.GraphConv(
                 in_feats=self.node_hidden_size,
                 out_feats=self.node_hidden_size,
-                 norm='both', 
-                 weight=True, 
-                 bias=True
+                norm='both', 
+                weight=True, 
+                bias=True,
+                allow_zero_in_degree=True
             )
+        else:
+          raise NotImplementedError("")
+
+        if self.heterograph:
             mods_dict_conv = {}
             for i in range(num_edge_type):
                 mods_dict_conv[str(i)] = conv_layer
@@ -129,27 +103,34 @@ class GNNEncoder(nn.Module):
         ])
 
         if self.concat_intermediate:
+            if not self.heterograph:
+                num_edge_type = 1
             if self.num_heads == 0:
                 embed_dim = self.n_message_passes * embed_dim * num_edge_type
             else:
                 embed_dim = (self.n_message_passes + 1) * embed_dim * num_edge_type
 
-        # self.multihead_attention_one = nn.MultiheadAttention(embed_dim, self.num_heads)
-        # self.multihead_attention_two = nn.MultiheadAttention(self.node_hidden_size, self.num_heads)
+        self.dim_reduce_layer = nn.Sequential(
+                nn.Conv1d(in_channels=num_edge_type, out_channels=1, kernel_size=1),
+                nn.ReLU(),
+                nn.MaxPool1d(3, stride=2))
+        conv_reduce_dim = embed_dim/num_edge_type + 1
+        self.reduce_dim = int((conv_reduce_dim + 2*(-1)*(3-1)-1)/2) + 1
+
         self.output_norm = nn.Sigmoid()
         if self.predictor == "MLP":
             self.reward_predictor_block_one = nn.Sequential(
-                nn.LayerNorm(embed_dim),
+                nn.LayerNorm(self.reduce_dim),
                 nn.Dropout(p=0.3),
-                nn.Linear(embed_dim, 64),
+                nn.Linear(self.reduce_dim, 64),
                 nn.ReLU())
             f_dim = 64
         elif self.predictor == "Conv":
             self.reward_predictor_block_one = nn.Sequential(
-                nn.Conv1d(in_channels=num_edge_type, out_channels=3, kernel_size=3),
+                nn.Conv1d(in_channels=num_edge_type, out_channels=4, kernel_size=3),
                 nn.ReLU(),
                 nn.MaxPool1d(3, stride=2),
-                nn.Conv1d(3, 1, 1),
+                nn.Conv1d(4, 1, 1),
                 nn.ReLU(),
                 nn.MaxPool1d(2, stride=3))
 
@@ -180,24 +161,13 @@ class GNNEncoder(nn.Module):
                         intermediate[node_type] = [dgl.max_nodes(g, "feat", ntype=node_type)]
                 else:
                     intermediate = [dgl.max_nodes(g, "feat")]
-            # if self.gnn_type == "GatedGraphConv":
-            #     for i, layer in enumerate(self.ggcnn):
-            #         res = layer(g, res, g.edata["flow"])
-            #         if self.concat_intermediate:
-            #             g.ndata["feat"] = res
-            #             intermediate.append(dgl.max_nodes(g, "feat"))
-
-            # elif self.gnn_type == "GATv2Conv":
-            #     for i, layer in enumerate(self.ggcnn):
-            #         res = layer(g, res)
-            #         res = torch.mean(res, dim=1)
-            #         if self.concat_intermediate:
-            #             g.ndata["feat"] = res
-            #             intermediate.append(dgl.max_nodes(g, "feat"))
             if self.num_heads != 0:
                 res = self.gat(g, res)
-                for key in res.keys():
-                    res[key] = torch.mean(res[key], dim=1)
+                if self.heterograph:
+                    for key in res.keys():
+                        res[key] = torch.mean(res[key], dim=1)
+                else:
+                  res = torch.mean(res, dim=1)
                 if self.concat_intermediate:
                     g.ndata["feat"] = res
                     if self.heterograph:
@@ -206,10 +176,14 @@ class GNNEncoder(nn.Module):
                     else:
                         intermediate.append(dgl.max_nodes(g, "feat"))
             for i, layer in enumerate(self.ggcnn):
-                if self.heterograph:
-                    res = layer(g, res)
+                if self.gnn_type=="GatedGraphConv":
+                    if self.heterograph:
+                        for node_type in g.ndata["feat"].keys():
+                            res = layer(g, res, g.edata["flow"])
+                    else:
+                        res = layer(g, res, g.edata["flow"])
                 else:
-                    res = layer(g, res, g.edata["flow"])
+                    res = layer(g, res)
                 if self.concat_intermediate:
                     g.ndata["feat"] = res
                     if self.heterograph:
@@ -226,10 +200,13 @@ class GNNEncoder(nn.Module):
                             value_cat = torch.cat(value, axis=1)
                             features.append(value_cat)
                         # 
-                        if self.predictor == "MLP":
-                            aggregation = torch.cat(features, axis=1)
-                        elif self.predictor == "Conv":
-                            aggregation = torch.stack(features).transpose(0,1)
+                        # if self.predictor == "MLP":
+                        #     aggregation = torch.cat(features, axis=1)
+                        # elif self.predictor == "Conv":
+                        #     aggregation = torch.stack(features).transpose(0,1)
+                        aggregation = torch.stack(features).transpose(0,1)
+                        aggregation = self.dim_reduce_layer(aggregation)
+                        aggregation = torch.flatten(aggregation, 1)
                     else:
                         aggregation = torch.cat(intermediate, axis=1)
                 else:
@@ -282,7 +259,7 @@ class GNNEncoder(nn.Module):
         else:
             features = []
             if self.use_node_embedding:
-                features.append(self.node_embedding(g.ndata["text_idx"]))
+                features =self.node_embedding(g.ndata["text_idx"])
             g.ndata["feat"] = features
 
     def get_edge_embedding(self, g):
