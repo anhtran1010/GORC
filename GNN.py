@@ -22,13 +22,13 @@ class GNNEncoder(nn.Module):
             n_etypes=4,
             n_message_passes=0,
             reward_dim=1,
-            gnn_type="GraphConv",
+            gnn_type="GraphAttention",
             predictor="MLP",
             feat_drop=0.0,
-            num_heads=4,
+            num_heads=6,
             concat_intermediate=False,
             graph_inference=True,
-            attention=True
+            attention=False
     ):
         super(GNNEncoder, self).__init__()
 
@@ -58,6 +58,8 @@ class GNNEncoder(nn.Module):
         embed_dim = self.node_hidden_size
 
         if self.gnn_type == "GatedGraphConv":
+            if self.heterograph:
+                self.n_etypes=1
             conv_layer = dgl.nn.pytorch.conv.GatedGraphConv(
                   in_feats=self.node_hidden_size,
                   out_feats=self.node_hidden_size,
@@ -74,29 +76,40 @@ class GNNEncoder(nn.Module):
                 allow_zero_in_degree=True
             )
         elif self.gnn_type=="GraphAttention":
-            conv_layer = dgl.nn.pytorch.conv.GATv2Conv(
-                    in_feats=self.node_hidden_size,
-                    out_feats=self.node_hidden_size,
-                    num_heads=self.num_heads,
-                    feat_drop=0.3,
-                    attn_drop=0.3,
-                    residual=True,
-                    activation=nn.ReLU(),
-                    allow_zero_in_degree=True,
-                )
+            self.ggcnn = nn.ModuleList([])
+            in_feats = self.node_hidden_size
+            for i in range(self.n_message_passes):
+                conv_layer = dgl.nn.pytorch.conv.GATv2Conv(
+                        in_feats=in_feats,
+                        out_feats=self.node_hidden_size,
+                        num_heads=self.num_heads,
+                        feat_drop=0.3,
+                        attn_drop=0.3,
+                        residual=True,
+                        activation=nn.ReLU(),
+                        allow_zero_in_degree=True,
+                    )
+                if self.heterograph:
+                    mods_dict_conv = {}
+                    for i in range(num_edge_type):
+                        mods_dict_conv[str(i)] = conv_layer
+                    conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
+                self.ggcnn.append(conv_layer)
+                in_feats = self.node_hidden_size * self.num_heads
+                    
         else:
           raise NotImplementedError("")
+        if self.gnn_type=="GraphConv" or self.gnn_type=="GatedGraphConv":
+            if self.heterograph:
+                mods_dict_conv = {}
+                for i in range(num_edge_type):
+                    mods_dict_conv[str(i)] = conv_layer
+                conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
 
-        if self.heterograph:
-            mods_dict_conv = {}
-            for i in range(num_edge_type):
-                mods_dict_conv[str(i)] = conv_layer
-            conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
-
-        self.ggcnn = nn.ModuleList([
-            conv_layer
-            for _ in range(self.n_message_passes)
-        ])
+            self.ggcnn = nn.ModuleList([
+                conv_layer
+                for _ in range(self.n_message_passes)
+            ])
 
         if self.concat_intermediate:
             if not self.heterograph:
@@ -172,6 +185,12 @@ class GNNEncoder(nn.Module):
                         res = layer(g, res, g.edata["flow"])
                 else:
                     res = layer(g, res)
+                    if self.gnn_type=="GraphAttention":
+                        for ntype in res:
+                            if i == self.n_message_passes-1:
+                                res[ntype] = torch.mean(res[ntype],dim=1)
+                            res[ntype] = torch.flatten(res[ntype],start_dim=1)
+                g.ndata["feat"] = res
                 if self.concat_intermediate:
                     g.ndata["feat"] = res
                     if self.heterograph:

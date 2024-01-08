@@ -182,12 +182,8 @@ def hyper_tuning(data_loader):
 
         
     skf = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state = 1001)
-    search_space = {"predictor": ["Conv", "MLP"],
-        "n_steps": [1,2,3,4,5,6,7,8,9],
-        "n_message_passes": [1,2,3,4,5,6,7,8,9,10],
-        "num_heads": [1,2,3,4,5,6,7,8],
-        "node_hidden_size": [32, 64, 128],
-        "epochs": [45,55,65,75,85,100]
+    search_space = {
+        "n_message_passes": [1,2,3,4,5],
     }
     model_estimator = GNNEstimator(node_vocab_size=len(vocab) + 1)
     gscv = GridSearchCV(estimator=model_estimator, param_grid=search_space)
@@ -258,11 +254,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Simple Driver program that trains a GCN to predict the data race condition')
     parser.add_argument('-np', '--num-processes', help='Number of processes to use for training', type=int, default=0)
-    parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=2)
-    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=8)
+    parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=1)
+    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=2)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
-    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=70)
-    parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=10)
+    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=85)
+    parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=4)
     parser.add_argument('-d', '--device', type=str, help='Device to use for training', default="cpu")
     parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=32)
     parser.add_argument('-i', '--graph-inference', type=bool, help='If model is doing graph inference', default=True)
