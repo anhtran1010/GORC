@@ -17,12 +17,12 @@ class GNNEncoder(nn.Module):
             heterograph=True,
             use_node_embedding=True,
             num_node_type=4,
-            num_edge_type=4,
             n_steps=1,
-            n_etypes=4,
+            n_etypes=8,
+            etypes=[('0', '0', '0'), ('0', '1', '1'), ('0', '2', '0'), ('1', '1', '0'), ('2', '1', '0'), ('3', '3', '1'), ('3', '3', '2'), ('3', '3', '3')],
             n_message_passes=0,
             reward_dim=1,
-            gnn_type="GraphAttention",
+            gnn_type="GraphConv",
             predictor="MLP",
             feat_drop=0.0,
             num_heads=6,
@@ -46,6 +46,7 @@ class GNNEncoder(nn.Module):
         self.heterograph = heterograph
         self.predictor = predictor
         self.attention = attention
+        self.etypes = etypes
         if self.use_node_embedding:
             if self.heterograph:
                 num_embeddings = {}
@@ -91,8 +92,8 @@ class GNNEncoder(nn.Module):
                     )
                 if self.heterograph:
                     mods_dict_conv = {}
-                    for i in range(num_edge_type):
-                        mods_dict_conv[str(i)] = conv_layer
+                    for i in self.etypes:
+                        mods_dict_conv[i] = conv_layer
                     conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
                 self.ggcnn.append(conv_layer)
                 in_feats = self.node_hidden_size * self.num_heads
@@ -102,8 +103,8 @@ class GNNEncoder(nn.Module):
         if self.gnn_type=="GraphConv" or self.gnn_type=="GatedGraphConv":
             if self.heterograph:
                 mods_dict_conv = {}
-                for i in range(num_edge_type):
-                    mods_dict_conv[str(i)] = conv_layer
+                for i in self.etypes:
+                    mods_dict_conv[i] = conv_layer
                 conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
 
             self.ggcnn = nn.ModuleList([
@@ -112,8 +113,6 @@ class GNNEncoder(nn.Module):
             ])
 
         if self.concat_intermediate:
-            if not self.heterograph:
-                num_edge_type = 1
             embed_dim = self.n_message_passes * embed_dim
 
         # self.dim_reduce_layer = nn.Sequential(
@@ -140,7 +139,7 @@ class GNNEncoder(nn.Module):
             f_dim = 64
         elif self.predictor == "Conv":
             self.reward_predictor_block_one = nn.Sequential(
-                nn.Conv1d(in_channels=num_edge_type, out_channels=4, kernel_size=3),
+                nn.Conv1d(in_channels=self.n_etypes, out_channels=4, kernel_size=3),
                 nn.ReLU(),
                 nn.MaxPool1d(3, stride=2),
                 nn.Conv1d(4, 1, 1),
