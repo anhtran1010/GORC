@@ -32,6 +32,7 @@ def model_init(n_mp=6, n_steps=2, hidden_nodes=64, graph_inference=True):
         # Add one to the vocab size to accomodate for the out-of-vocab element.
         node_vocab_size=len(vocab) + 1,
         node_hidden_size=hidden_nodes,
+        # etypes = [('0', '0', '0'), ('0', '1', '1'), ('0', '2', '0'), ('1', '1', '0'), ('2', '1', '0')],
         n_message_passes=n_mp,
         n_steps=n_steps,
         graph_inference=graph_inference
@@ -140,13 +141,13 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
         f"  Whole {'training' if train else 'validation'} took: "
         f"{total_time}"
     )
-    plt.figure(figsize=(12, 8))
+    # plt.figure(figsize=(12, 8))
 
     # plt.subplot(2, 2, 1)
-    plt.plot(np.arange(num_epoch), train_loss)
+    # plt.plot(np.arange(num_epoch), train_loss)
     # plt.plot(np.arange(num_epoch), val_losses)
-    plt.xlabel('Training epochs')
-    plt.ylabel('Training Loss')
+    # plt.xlabel('Training epochs')
+    # plt.ylabel('Training Loss')
 
     # plt.subplot(2, 2, 2)
     # plt.plot(np.arange(num_epoch), val_precision)
@@ -163,7 +164,7 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
     # plt.xlabel('Training epochs')
     # plt.ylabel('Validation Recall ')
 
-    plt.savefig("Training Stats for run {}".format(run_iter))
+    # plt.savefig("Training Stats for run {}".format(run_iter))
     return model
 
 def hyper_tuning(data_loader):
@@ -181,15 +182,15 @@ def hyper_tuning(data_loader):
         train_labels.append(label)
 
         
-    skf = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state = 1001)
+    skf = RepeatedStratifiedKFold(n_splits=10, n_repeats=10, random_state = 1001)
     search_space = {
-        "n_message_passes": [1,2,3,4,5],
+        "n_message_passes": [1,2,3,4,5,6,7,8,9],
     }
     model_estimator = GNNEstimator(node_vocab_size=len(vocab) + 1)
     gscv = GridSearchCV(estimator=model_estimator, param_grid=search_space)
     gscv.fit(train_graphs, train_labels)
     df = pd.DataFrame.from_dict(gscv.cv_results_)
-    df.to_csv("estimator_result.csv", index=False)
+    df.to_csv("estimator_result_conv_predictor.csv", index=False)
 
 def test(data_loader, model, cross_val=False):
     model.eval()
@@ -255,10 +256,10 @@ if __name__ == "__main__":
         description='Simple Driver program that trains a GCN to predict the data race condition')
     parser.add_argument('-np', '--num-processes', help='Number of processes to use for training', type=int, default=0)
     parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=1)
-    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=4)
+    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=8)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
     parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=85)
-    parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=4)
+    parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=5)
     parser.add_argument('-d', '--device', type=str, help='Device to use for training', default="cpu")
     parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=64)
     parser.add_argument('-i', '--graph-inference', type=bool, help='If model is doing graph inference', default=True)
@@ -287,19 +288,39 @@ if __name__ == "__main__":
         hyper_tuning(train_loader)
         rf.close()
         exit()
-    all_precision = []
-    all_accuracy = []
-    all_recall = []
-    for i in range(num_runs):
-        print("Begin run {}".format(i))
-        if k>0:
-            fold_index = train_set.k_fold()
-            for fold_num, fold in enumerate(fold_index):
-                train_index = []
-                for j in torch.arange(train_set.num_samples):
-                    if j not in fold:
-                        train_index.append(j)
-                train_set.set_train_test_folds(train_index, fold)
+    for n_pass in [3]:
+        all_precision = []
+        all_accuracy = []
+        all_recall = []
+        for i in range(num_runs):
+            print("Begin run {}".format(i))
+            if k>0:
+                fold_index = train_set.k_fold()
+                for fold_num, fold in enumerate(fold_index):
+                    train_index = []
+                    for j in torch.arange(train_set.num_samples):
+                        if j not in fold:
+                            train_index.append(j)
+                    train_set.set_train_test_folds(train_index, fold)
+                    train_loader = DataLoader(
+                        train_set,
+                        batch_size=2,
+                        shuffle=True,
+                        num_workers=0,
+                        collate_fn=train_set.collate_fn
+                    )
+
+                    untrained_model, optimizer = model_init(n_mp=n_pass, n_steps=n_steps,
+                                                                hidden_nodes=hidden_nodes, graph_inference=graph_inference)
+                    trained_model = train(train_loader, untrained_model, optimizer, epochs, i*fold_num, graph_inference)
+                    accuracy, precision, recall = test(train_loader, trained_model, cross_val=True)
+                    all_precision.append(precision)
+                    all_accuracy.append(accuracy)
+                    all_recall.append(recall)
+                    del trained_model, untrained_model, train_loader
+            else:
+                untrained_model, optimizer = model_init(n_mp=n_pass, n_steps=n_steps,
+                                                                hidden_nodes=hidden_nodes, graph_inference=graph_inference)
                 train_loader = DataLoader(
                     train_set,
                     batch_size=2,
@@ -307,57 +328,35 @@ if __name__ == "__main__":
                     num_workers=0,
                     collate_fn=train_set.collate_fn
                 )
-
-                untrained_model, optimizer = model_init(n_mp=n_message_passes, n_steps=n_steps,
-                                                            hidden_nodes=hidden_nodes, graph_inference=graph_inference)
-                trained_model = train(train_loader, untrained_model, optimizer, epochs, i*fold_num, graph_inference)
-                accuracy, precision, recall = test(train_loader, trained_model, cross_val=True)
+                test_loader = DataLoader(
+                    test_set,
+                    batch_size=1,
+                    shuffle=False,
+                    num_workers=0,
+                    collate_fn=test_set.collate_fn
+                )
+                trained_model = train(train_loader, untrained_model, optimizer, epochs, i, graph_inference)
+                accuracy, precision, recall = test(test_loader, trained_model, cross_val=False)
                 all_precision.append(precision)
                 all_accuracy.append(accuracy)
                 all_recall.append(recall)
-                del trained_model, untrained_model, train_loader
-        else:
-            untrained_model, optimizer = model_init(n_mp=n_message_passes, n_steps=n_steps,
-                                                            hidden_nodes=hidden_nodes, graph_inference=graph_inference)
-            train_loader = DataLoader(
-                train_set,
-                batch_size=2,
-                shuffle=True,
-                num_workers=0,
-                collate_fn=train_set.collate_fn
-            )
-            test_loader = DataLoader(
-                test_set,
-                batch_size=1,
-                shuffle=False,
-                num_workers=0,
-                collate_fn=test_set.collate_fn
-            )
-            trained_model = train(train_loader, untrained_model, optimizer, epochs, i, graph_inference)
-            accuracy, precision, recall = test(test_loader, trained_model, cross_val=False)
-            all_precision.append(precision)
-            all_accuracy.append(accuracy)
-            all_recall.append(recall)
-            del trained_model, untrained_model
-    
+                del trained_model, untrained_model
+        
 
-    mean_precision = np.mean(all_precision)
-    mean_accuracy = np.mean(all_accuracy)
-    mean_recall = np.mean(all_recall)
-    print("Performance of {} with {} message passes are \n".format(num_runs, n_message_passes))
-    print("Precisions: ", all_precision)
-    print("\n")
-    print("Accuracy: ", all_accuracy)
-    print("\n")
-    print("Recall: ", all_recall)
-    print("\n")
-    print("The mean precision after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_precision))
-    print("The mean accuracy after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_accuracy))
-    print("The mean recall after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_recall))
-    rf.write("Precisions: {} \n".format(all_precision))
-    rf.write("The mean precision after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_precision))
-    rf.write("Accuracy: {} \n".format(all_accuracy))
-    rf.write("The mean accuracy after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_accuracy))
-    rf.write("Recall: {} \n".format(all_recall))
-    rf.write("The mean recall after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_recall))
+        mean_precision = np.mean(all_precision)
+        mean_accuracy = np.mean(all_accuracy)
+        mean_recall = np.mean(all_recall)
+        print("Performance of {} with {} message passes are \n".format(num_runs, n_pass))
+        print("Precisions: ", all_precision)
+        print("Accuracy: ", all_accuracy)
+        print("Recall: ", all_recall)
+        print("The mean precision after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_precision))
+        print("The mean accuracy after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_accuracy))
+        print("The mean recall after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_recall))
+        rf.write("Precisions: {} \n".format(all_precision))
+        rf.write("The mean precision after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_precision))
+        rf.write("Accuracy: {} \n".format(all_accuracy))
+        rf.write("The mean accuracy after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_accuracy))
+        rf.write("Recall: {} \n".format(all_recall))
+        rf.write("The mean recall after {} runs with {} training epochs is {}. \n".format(num_runs, epochs, mean_recall))
     rf.close()

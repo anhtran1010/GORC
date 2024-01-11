@@ -6,7 +6,7 @@ from sklearn.base import BaseEstimator
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 class GNNEstimator(BaseEstimator):
-    def __init__(self, node_vocab_size, epochs=50, n_steps=2, n_message_passes=3, num_heads=5, predictor="MLP", node_hidden_size=64):
+    def __init__(self, node_vocab_size, epochs=85, n_steps=2, n_message_passes=3, num_heads=5, predictor="Conv", node_hidden_size=64):
         self.node_hidden_size = node_hidden_size
         self.n_steps = n_steps
         self.n_message_passes = n_message_passes
