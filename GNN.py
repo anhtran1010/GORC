@@ -26,7 +26,7 @@ class GNNEncoder(nn.Module):
             gnn_type="Combination",
             predictor="MLP",
             feat_drop=0.0,
-            num_heads=5,
+            num_heads=4,
             concat_intermediate=True,
             graph_inference=True,
             attention=False
@@ -117,7 +117,7 @@ class GNNEncoder(nn.Module):
                         in_feats=self.node_hidden_size,
                         out_feats=self.node_hidden_size,
                         num_heads=self.num_heads,
-                        feat_drop=0.3,
+                        feat_drop=0.4,
                         attn_drop=0.3,
                         residual=True,
                         activation=nn.ReLU(),
@@ -125,8 +125,8 @@ class GNNEncoder(nn.Module):
                     )
             if self.heterograph:
                 mods_dict_conv = {}
-                for i in self.etypes:
-                    mods_dict_conv[i] = gat
+                for i in range(num_node_type):
+                    mods_dict_conv[str(i)] = gat
                 gat_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
 
             self.ggcnn = nn.ModuleList([gat_layer])
@@ -141,8 +141,8 @@ class GNNEncoder(nn.Module):
             )
             if self.heterograph:
                 mods_dict_conv = {}
-                for i in self.etypes:
-                    mods_dict_conv[i] = conv_layer
+                for i in range(num_node_type):
+                    mods_dict_conv[str(i)] = conv_layer
                 conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
 
             for i in range(self.n_message_passes-1):
@@ -153,6 +153,8 @@ class GNNEncoder(nn.Module):
 
         if self.concat_intermediate:
             embed_dim = (self.n_message_passes+1) * embed_dim * num_node_type
+            if self.gnn_type == "GraphAttention":
+                embed_dim = 2048
 
         # self.dim_reduce_layer = nn.Sequential(
         #         nn.Conv1d(in_channels=num_edge_type, out_channels=1, kernel_size=1),
@@ -172,16 +174,16 @@ class GNNEncoder(nn.Module):
         if self.predictor == "MLP":
             self.reward_predictor_block_one = nn.Sequential(
                 nn.LayerNorm(embed_dim),
-                nn.Dropout(p=0.3),
-                nn.Linear(embed_dim, 64),
+                nn.Dropout(p=0.4),
+                nn.Linear(embed_dim, 32),
                 nn.ReLU())
 
             self.reward_predictor_block_two = nn.Sequential(
                 # nn.BatchNorm1d(self.node_hidden_size),
-                nn.LayerNorm(64),
+                nn.LayerNorm(32),
                 # nn.Softmax(dim=1),
                 nn.Dropout(p=0.4),
-                nn.Linear(64, self.reward_dim))
+                nn.Linear(32, self.reward_dim))
         elif self.predictor == "Conv":
             self.reward_predictor_conv = nn.Sequential(
                 nn.Conv1d(in_channels=embed_dim, out_channels=32, kernel_size=3),

@@ -24,7 +24,7 @@ from skopt.space import Categorical
 import pandas as pd
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 rf = open("runs_result.txt", "a+")
-with open("trans_noarith_vocabs", "rb") as f:
+with open("trans_noarith_vocabs_v2", "rb") as f:
         vocab = pickle.load(f)
 
 def model_init(n_mp=6, n_steps=2, hidden_nodes=64, graph_inference=True):
@@ -37,7 +37,7 @@ def model_init(n_mp=6, n_steps=2, hidden_nodes=64, graph_inference=True):
         n_steps=n_steps,
         graph_inference=graph_inference
     ).to(device=torch.device(device))
-    optimizer = torch.optim.AdamW(model.parameters())
+    optimizer = torch.optim.AdamW(model.parameters(0.0001))
     return model, optimizer
 
 def data_init(graph_inference=True):
@@ -54,8 +54,8 @@ def data_init(graph_inference=True):
 
         # train_set = DataraceDataset("dataracebench_combined_graphs.bin",
         #                            "dataracebench_combined_labels")
-        train_set = DataraceDataset("dataracebench_trans_noarith_hetero_graphs.bin",
-                                   "dataracebench_trans_noarith_hetero_labels")
+        train_set = DataraceDataset("dataracebench_trans_noarith_hetero_graphs_v2.bin",
+                                   "dataracebench_trans_noarith_hetero_labels_v2")
     else:
         train_set = DataraceDataset("data_generator/graph_representations/dgl_dataset.bin",
                                     "data_generator/graph_representations/all_labels")
@@ -141,13 +141,13 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
         f"  Whole {'training' if train else 'validation'} took: "
         f"{total_time}"
     )
-    # plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(12, 8))
 
-    # plt.subplot(2, 2, 1)
-    # plt.plot(np.arange(num_epoch), train_loss)
+    plt.subplot(2, 2, 1)
+    plt.plot(np.arange(num_epoch), train_loss)
     # plt.plot(np.arange(num_epoch), val_losses)
-    # plt.xlabel('Training epochs')
-    # plt.ylabel('Training Loss')
+    plt.xlabel('Training epochs')
+    plt.ylabel('Training Loss')
 
     # plt.subplot(2, 2, 2)
     # plt.plot(np.arange(num_epoch), val_precision)
@@ -164,7 +164,7 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
     # plt.xlabel('Training epochs')
     # plt.ylabel('Validation Recall ')
 
-    # plt.savefig("Training Stats for run {}".format(run_iter))
+    plt.savefig("Training Stats for run {}".format(run_iter))
     return model
 
 def hyper_tuning(data_loader):
@@ -258,10 +258,10 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=1)
     parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=8)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
-    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=85)
-    parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=5)
+    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=60)
+    parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=1)
     parser.add_argument('-d', '--device', type=str, help='Device to use for training', default="cpu")
-    parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=64)
+    parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=32)
     parser.add_argument('-i', '--graph-inference', type=bool, help='If model is doing graph inference', default=True)
     parser.add_argument('-k', '--k-fold', type=int, help='Number of k for cross validation. If k is 0, use indigo bench', default=0)
     parser.add_argument('-ht', '--hyperparams-tuning', type=bool, help='If we want to do training or param tuning', default=False)
@@ -274,6 +274,7 @@ if __name__ == "__main__":
     hidden_nodes = args.hidden_nodes
     graph_inference = args.graph_inference
     k = args.k_fold
+    print(k)
     hyperparams_tuning = args.hyperparams_tuning
 
     train_set, test_set = data_init(graph_inference=graph_inference)
@@ -295,13 +296,9 @@ if __name__ == "__main__":
         for i in range(num_runs):
             print("Begin run {}".format(i))
             if k>0:
-                fold_index = train_set.k_fold()
-                for fold_num, fold in enumerate(fold_index):
-                    train_index = []
-                    for j in torch.arange(train_set.num_samples):
-                        if j not in fold:
-                            train_index.append(j)
-                    train_set.set_train_test_folds(train_index, fold)
+                fold_indices = train_set.k_fold(k)
+                for fold_num, (train_index, test_index) in enumerate(fold_indices):
+                    train_set.set_train_test_folds(train_index, test_index)
                     train_loader = DataLoader(
                         train_set,
                         batch_size=2,
@@ -312,7 +309,7 @@ if __name__ == "__main__":
 
                     untrained_model, optimizer = model_init(n_mp=n_pass, n_steps=n_steps,
                                                                 hidden_nodes=hidden_nodes, graph_inference=graph_inference)
-                    trained_model = train(train_loader, untrained_model, optimizer, epochs, i*fold_num, graph_inference)
+                    trained_model = train(train_loader, untrained_model, optimizer, epochs, fold_num, graph_inference)
                     accuracy, precision, recall = test(train_loader, trained_model, cross_val=True)
                     all_precision.append(precision)
                     all_accuracy.append(accuracy)
