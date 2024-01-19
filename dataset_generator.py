@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import Dataset
 import dgl
 from dgl.data.utils import load_graphs
+from sklearn.model_selection import StratifiedKFold, LeaveOneOut
 
 class DataraceDataset(Dataset):
     def __init__(self, graph_file, labels_file, transform=None):
@@ -55,11 +56,12 @@ class DataraceDataset(Dataset):
 
     def initialize_dataset(self):
         self.graphs, _ = load_graphs(self.graph_file)
-        for i in range(len(self.graphs)):
-            graph = self.graphs[i]
-            if len(graph.etypes) == 6:
-                break
-        del self.graphs[i]
+        # for i in range(len(self.graphs)):
+        #     graph = self.graphs[i]
+        #     print(graph.etypes)
+        #     if len(graph.etypes) == 6:
+        #         continue
+        # del self.graphs[i]
 
         self.num_samples = len(self.graphs)
 
@@ -112,9 +114,10 @@ class DataraceDataset(Dataset):
         self.num_test = len(self.test_set_idx)
 
     def k_fold(self, k=5):
-        fold_size = int(self.num_samples/k)
-        fold_index = torch.split(torch.arange(self.num_samples), fold_size)
-        return fold_index
+        # split_strat = LeaveOneOut()
+        split_strat = StratifiedKFold(k, shuffle=True)
+        fold_indices = split_strat.split(self.graphs, self.labels)
+        return fold_indices
 
     def set_train_test_folds(self, train_index, test_index):
         self.isSplit = True

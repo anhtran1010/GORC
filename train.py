@@ -24,7 +24,7 @@ from skopt.space import Categorical
 import pandas as pd
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 rf = open("runs_result.txt", "a+")
-with open("trans_noarith_vocabs_v2", "rb") as f:
+with open("trans_noarith_vocabs_v4", "rb") as f:
         vocab = pickle.load(f)
 
 def model_init(n_mp=6, n_steps=2, hidden_nodes=64, graph_inference=True):
@@ -54,8 +54,8 @@ def data_init(graph_inference=True):
 
         # train_set = DataraceDataset("dataracebench_combined_graphs.bin",
         #                            "dataracebench_combined_labels")
-        train_set = DataraceDataset("dataracebench_trans_noarith_hetero_graphs_v2.bin",
-                                   "dataracebench_trans_noarith_hetero_labels_v2")
+        train_set = DataraceDataset("dataracebench_trans_noarith_homo_graphs_v4.bin",
+                                   "dataracebench_trans_noarith_homo_labels_v4")
     else:
         train_set = DataraceDataset("data_generator/graph_representations/dgl_dataset.bin",
                                     "data_generator/graph_representations/all_labels")
@@ -88,8 +88,9 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
             graph, labels = data
             times["get_data"] += time.time() - t1
             t1 = time.time()
-            if graph.num_nodes() > 75000:
-                continue
+            # if graph.num_nodes() > 100000:
+            #     print("skip")
+            #     continue
             graph = graph.to(device=device)
             labels = torch.tensor(labels, device=device)
             if not graph_inference:
@@ -258,7 +259,7 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=1)
     parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=8)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
-    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=60)
+    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=85)
     parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=1)
     parser.add_argument('-d', '--device', type=str, help='Device to use for training', default="cpu")
     parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=32)
@@ -289,7 +290,7 @@ if __name__ == "__main__":
         hyper_tuning(train_loader)
         rf.close()
         exit()
-    for n_pass in [3]:
+    for n_pass in [4]:
         all_precision = []
         all_accuracy = []
         all_recall = []
