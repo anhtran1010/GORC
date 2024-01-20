@@ -21,12 +21,12 @@ class GNNEncoder(nn.Module):
             n_steps=1,
             n_etypes=8,
             etypes=[('0', '0', '0'), ('0', '1', '1'), ('0', '2', '0'), ('1', '1', '0'), ('2', '1', '0'), ('3', '3', '1'), ('3', '3', '2'), ('3', '3', '3')],
-            n_message_passes=0,
+            n_message_passes=2,
             reward_dim=1,
             gnn_type="Combination",
             predictor="MLP",
             feat_drop=0.0,
-            num_heads=6,
+            num_heads=2,
             concat_intermediate=False,
             graph_inference=True,
             attention=False
@@ -98,8 +98,8 @@ class GNNEncoder(nn.Module):
                         in_feats=in_feats,
                         out_feats=self.node_hidden_size,
                         num_heads=self.num_heads,
-                        feat_drop=0.3,
-                        attn_drop=0.3,
+                        feat_drop=0.2,
+                        # attn_drop=0.4,
                         residual=True,
                         activation=nn.ReLU(),
                         allow_zero_in_degree=True,
@@ -135,7 +135,7 @@ class GNNEncoder(nn.Module):
             conv_layer = dgl.nn.pytorch.conv.GatedGraphConv(
                   in_feats=self.node_hidden_size,
                   out_feats=self.node_hidden_size,
-                  n_steps=self.n_steps,
+                  n_steps=self.n_steps-1,
                   n_etypes=self.n_etypes,
               )
             # conv_layer = dgl.nn.pytorch.conv.GraphConv(
@@ -153,8 +153,9 @@ class GNNEncoder(nn.Module):
                     mods_dict_conv[i] = conv_layer
                 conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
 
-            for i in range(self.n_message_passes-1):
-                self.ggcnn.append(conv_layer)
+            # for i in range(self.n_message_passes-1):
+            #     self.ggcnn.append(conv_layer)
+            self.ggcnn.append(conv_layer)
             
         else:
           raise NotImplementedError("")
