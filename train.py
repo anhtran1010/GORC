@@ -42,8 +42,8 @@ def model_init(n_mp=6, n_steps=2, hidden_nodes=64, graph_inference=True):
 
 def pretrain_data_init(graph_inference=True):
     if graph_inference:
-        train_set = DataraceDataset("dataracebench_trans_noarith_homo_augment_graphs.bin",
-                                   "dataracebench_trans_noarith_homo_augment_labels")
+        train_set = DataraceDataset("dataracebench_trans_noarith_homo_augment_graphs_v5.bin",
+                                   "dataracebench_trans_noarith_homo_augment_labels_v5")
     train_loader = DataLoader(
                         train_set,
                         batch_size=2,
@@ -68,8 +68,9 @@ def data_init(graph_inference=True):
 
         # train_set = DataraceDataset("dataracebench_combined_graphs.bin",
         #                            "dataracebench_combined_labels")
-        train_set = DataraceDataset("dataracebench_trans_noarith_homo_orig_graphs.bin",
-                                   "dataracebench_trans_noarith_homo_orig_labels")
+        train_set = DataraceDataset("dataracebench_trans_noarith_homo_orig_graphs_v5.bin",
+                                   "dataracebench_trans_noarith_homo_orig_labels_v5")
+        print("num samples: ", train_set.num_samples)
     else:
         train_set = DataraceDataset("data_generator/graph_representations/dgl_dataset.bin",
                                     "data_generator/graph_representations/all_labels")
@@ -125,8 +126,8 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
 
             times["model_backward"] += time.time() - t1
             t1 = time.time()
-            # if i == 200:
-            #     break
+            if i == 50:
+                break
 
         # model.eval()
         # train_loader.dataset.train = False
@@ -156,13 +157,13 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
         f"  Whole {'training' if train else 'validation'} took: "
         f"{total_time}"
     )
-    plt.figure(figsize=(12, 8))
+    # plt.figure(figsize=(12, 8))
 
-    plt.subplot(2, 2, 1)
-    plt.plot(np.arange(num_epoch), train_loss)
+    # plt.subplot(2, 2, 1)
+    # plt.plot(np.arange(num_epoch), train_loss)
     # plt.plot(np.arange(num_epoch), val_losses)
-    plt.xlabel('Training epochs')
-    plt.ylabel('Training Loss')
+    # plt.xlabel('Training epochs')
+    # plt.ylabel('Training Loss')
 
     # plt.subplot(2, 2, 2)
     # plt.plot(np.arange(num_epoch), val_precision)
@@ -179,7 +180,7 @@ def train(data_loader, model, optimizer, num_epoch, run_iter, graph_inference=Tr
     # plt.xlabel('Training epochs')
     # plt.ylabel('Validation Recall ')
 
-    plt.savefig("Training Stats for run {}".format(run_iter))
+    # plt.savefig("Training Stats for run {}".format(run_iter))
     return model
 
 def hyper_tuning(data_loader):
@@ -273,7 +274,7 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=1)
     parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=8)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
-    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=65)
+    parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=120)
     parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=1)
     parser.add_argument('-d', '--device', type=str, help='Device to use for training', default="cpu")
     parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=64)
@@ -305,7 +306,7 @@ if __name__ == "__main__":
         hyper_tuning(train_loader)
         rf.close()
         exit()
-    for n_pass in [3]:
+    for n_pass in [5]:
         all_precision = []
         all_accuracy = []
         all_recall = []
@@ -314,6 +315,7 @@ if __name__ == "__main__":
             if k>0:
                 fold_indices = train_set.k_fold(k)
                 for fold_num, (train_index, test_index) in enumerate(fold_indices):
+                    print("fold num: ", fold_num+1)
                     train_set.set_train_test_folds(train_index, test_index)
                     train_loader = DataLoader(
                         train_set,
@@ -322,12 +324,16 @@ if __name__ == "__main__":
                         num_workers=0,
                         collate_fn=train_set.collate_fn
                     )
+                    # untrained_model, optimizer = model_init(n_mp=n_pass, n_steps=n_pass,
+                    #                         hidden_nodes=hidden_nodes, graph_inference=graph_inference)
+                    # trained_model = train(train_loader, untrained_model, optimizer, epochs, fold_num+1, graph_inference)
+                    # accuracy, precision, recall = test(train_loader, trained_model, cross_val=True)
+                    # #new_optim = torch.optim.AdamW(trained_model.parameters())
+                    # refined_model = train(pretrain_loader, trained_model, optimizer, num_epoch=2, run_iter=fold_num+11, graph_inference=graph_inference)
                     untrained_model, optimizer = model_init(n_mp=n_pass, n_steps=n_pass,
                                             hidden_nodes=hidden_nodes, graph_inference=graph_inference)
-                    trained_model = train(train_loader, untrained_model, optimizer, epochs, fold_num+1, graph_inference)
-                    accuracy, precision, recall = test(train_loader, trained_model, cross_val=True)
-                    new_optim = torch.optim.AdamW(trained_model.parameters(), lr=0.0001)
-                    refined_model = train(pretrain_loader, trained_model, new_optim, num_epoch=35, run_iter=fold_num+10, graph_inference=graph_inference)
+                    trained_model = train(pretrain_loader, untrained_model, optimizer, num_epoch=2, run_iter=fold_num+11, graph_inference=graph_inference)
+                    refined_model = train(train_loader, trained_model, optimizer, epochs, fold_num+1, graph_inference)
                     accuracy, precision, recall = test(train_loader, refined_model, cross_val=True)
                     all_precision.append(precision)
                     all_accuracy.append(accuracy)

@@ -114,8 +114,8 @@ class DataraceDataset(Dataset):
         self.num_test = len(self.test_set_idx)
 
     def k_fold(self, k=5):
-        # split_strat = LeaveOneOut()
-        split_strat = StratifiedKFold(k, shuffle=True)
+        split_strat = LeaveOneOut()
+        # split_strat = StratifiedKFold(k, shuffle=True)
         fold_indices = split_strat.split(self.graphs, self.labels)
         return fold_indices
 
