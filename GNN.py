@@ -208,9 +208,9 @@ class GNNEncoder(nn.Module):
         self.output_norm = nn.Sigmoid()
         if self.predictor == "MLP":
             self.reward_predictor_block_one = nn.Sequential(
-                nn.LayerNorm(self.embed_dim),
+                nn.LayerNorm(self.embed_dim*2),
                 nn.Dropout(p=0.3),
-                nn.Linear(self.embed_dim, 32),
+                nn.Linear(self.embed_dim*2, 32),
                 nn.ReLU())
 
             self.reward_predictor_block_two = nn.Sequential(
@@ -220,6 +220,10 @@ class GNNEncoder(nn.Module):
                 # nn.ReLU(),
                 nn.Dropout(p=0.4),
                 nn.Linear(32, self.reward_dim))
+            # self.reward_predictor_block_one = nn.Sequential(
+            #     nn.LayerNorm(self.embed_dim*2),
+            #     nn.Dropout(p=0.3),
+            #     nn.Linear(self.embed_dim*2, 1))
         elif self.predictor == "Conv":
             self.reward_predictor_conv = nn.Sequential(
                 nn.Conv1d(in_channels=embed_dim, out_channels=32, kernel_size=3),
@@ -353,7 +357,7 @@ class GNNEncoder(nn.Module):
     def combine_loss(self, graph_pred, graph_label, block_preds, block_labels, cluster_loss=0):
         graph_pred = torch.squeeze(graph_pred, dim=1)
         block_preds = torch.squeeze(block_preds, dim=1)
-        return 0.7 * self.loss_fn(block_preds, block_labels) + 0.3 * self.loss_fn(graph_pred, graph_label) + 0.3 * cluster_loss
+        return 0.8 * self.loss_fn(block_preds, block_labels) + 0.2 * self.loss_fn(graph_pred, graph_label) + 0.1 * cluster_loss
 
     def featurize_nodes(self, g):
         # This is very CompilerGym specific, can be rewritten for other tasks

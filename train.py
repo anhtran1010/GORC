@@ -212,6 +212,8 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
                 block_sets = []
                 sample_sets = []
                 sample_labels = []
+                sample_targets = []
+                targets = []
                 for i, block_label in enumerate(labels[0].items()):
                     block_name, label = block_label[0], block_label[1]
                     if inference == "block":
@@ -222,9 +224,11 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
                     if label == 1:
                         block_sets.append(node_idx)
                         block_labels.append(label)
+                        targets.append(prompts[0]["targets"][block_name])
                     else:
                         sample_sets.append(node_idx)
                         sample_labels.append(label)
+                        sample_targets.append(prompts[0]["targets"][block_name])
                 num_pos += len(block_sets)
                 k = 2- len(block_sets)
 
@@ -232,6 +236,7 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
                     if len(sample_sets) <= k:
                         block_sets = block_sets + sample_sets
                         block_labels += sample_labels
+                        targets += sample_targets
                         num_neg += len(sample_sets)
                     else:
                         sample_idx = np.random.choice(len(sample_sets), k, replace=False)
@@ -239,8 +244,9 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
                         for idx in sample_idx:
                             block_sets.append(sample_sets[idx])
                             block_labels.append(sample_labels[idx])
+                            targets.append(sample_targets[idx])
                 if os.path.isfile("llm_prompts.json"):
-                    graph_pred, block_preds, cluster_loss = model(graph, block_sets, prompts[0])
+                    graph_pred, block_preds, cluster_loss = model(graph, block_sets, prompts[0], targets)
                 else:
                     graph_pred, block_preds, cluster_loss = model(graph, block_sets)
                 block_labels = torch.tensor(block_labels, device=device, dtype=torch.float)
@@ -428,6 +434,7 @@ def test(train_set, model, cross_val=False, ensemble=False, model_importance=Non
                     output = output.detach().cpu()
                 else:
                     block_sets = []
+                    targets = []
                     for i, block_label in enumerate(label.items()):
                         block_name, label = block_label[0], block_label[1]
                         if inference == "block":
@@ -437,9 +444,10 @@ def test(train_set, model, cross_val=False, ensemble=False, model_importance=Non
                         node_idx = graph.nodes()[mask]
                         block_sets.append(node_idx)
                         labels.append(label)
+                        targets.append(prompt["targets"][block_name])
                     with torch.no_grad():
                         if os.path.isfile("llm_prompts.json"):
-                            _, block_preds, _= model(graph, block_sets, prompt)
+                            _, block_preds, _= model(graph, block_sets, prompt, targets)
                         else:
                             _, block_preds, _= model(graph, block_sets)
                     output = block_preds.detach().cpu()

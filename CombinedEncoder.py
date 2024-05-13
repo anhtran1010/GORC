@@ -12,9 +12,14 @@ import numpy as np
 from GNN import GNNEncoder
 from GNN_block import GNNBlock
 from torch_geometric.nn.dense import DMoNPooling
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
-from accelerate import load_checkpoint_and_dispatch
+from race_transformer import Transformer
 import sys
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
+from tokenizers.pre_tokenizers import Whitespace
+import os 
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class CombinedEncoder(GNNEncoder):
@@ -55,41 +60,42 @@ class CombinedEncoder(GNNEncoder):
             concat_intermediate)
 
         self.pooling = DMoNPooling([self.node_hidden_size, self.node_hidden_size], 1)
-        self.tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
-        config = AutoConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
-        self.llm = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf", torch_dtype=torch.bfloat16)
-        print(sys.getsizeof(self.llm))
-        self.last_hidden_state_size = self.llm.config.hidden_size
-        self.llm_transformation = nn.Sequential(
-            nn.Linear(self.last_hidden_state_size, 32),
-            nn.ReLU()
-        )
+        self.tokenizer = Tokenizer.from_file("tokenizer-datarace.json")
+        self.tokenizer.enable_truncation(max_length=4096)
+        self.llm = Transformer(embed_dim=256, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=2)
         self.graph_predictor = nn.Sequential(
                 nn.LayerNorm(self.embed_dim),
                 nn.Dropout(p=0.3),
                 nn.Linear(self.embed_dim, self.reward_dim),
                 nn.ReLU())
 
-    def forward(self, g, node_idx, prompts):
+    def forward(self, g, node_idx, prompts, targets):
         with g.local_scope():
             res = self.encoding(g)
             adj = g.adj().to_dense()
             # _, res, adj, sp, o, c = self.pooling(res, adj)
             # res = res.squeeze(0)
             g.ndata["feat"] = res
-            block_aggregation = torch.zeros(len(node_idx), res.shape[-1], device=device)
+            block_aggregation = torch.zeros(len(node_idx), res.shape[-1]*2, device=device)
+            llm_inputs = self.tokenizer.encode(prompts["prompt"]).ids
+            llm_inputs = torch.tensor(llm_inputs, device=device, dtype=int)
+            llm_encode = self.llm.encode(llm_inputs)
             total_loss = 0
-            for i, idx in enumerate(node_idx):
+            for i, line in enumerate(zip(node_idx, targets)):
+                idx, trg = line[0], line[1]
                 # sg = g.subgraph(idx)
                 # feat = sg.ndata["feat"]
                 mask = torch.zeros(g.num_nodes(), device=device).scatter_(0, idx, 1)
                 _, block, new_adj, sp, o, c = self.pooling(res, adj, mask)
-                block_aggregation[i] = block.squeeze(0)
+                trg_input = self.tokenizer.encode(trg).ids
+                trg_input = torch.tensor(trg_input, device=device)
+                llm_pred = self.llm(llm_encode, trg_input).mean(dim=0)
+                block = torch.flatten(block)
+                block_aggregation[i] = torch.cat([block,llm_pred], dim=0)
                 total_loss += sp + o + c
             _, aggregation, graph_adj, spg, og, cg = self.pooling(res, adj)
             aggregation = aggregation.squeeze(0)
-            llm_inputs = self.tokenizer(prompts["prompt"], return_tensors="pt")
-            llm_encode = self.llm_transformation(self.llm.generate(llm_inputs.input_ids).last_hidden_state)
+
         # if self.attention:
         #     res, atten_weight = self.attention_layer(query=aggregation, key=aggregation, value=aggregation)
         #     res = self.attention_activation(res)
@@ -98,7 +104,6 @@ class CombinedEncoder(GNNEncoder):
             if self.heterograph and self.concat_intermediate==False:
                 res, _ = torch.max(res, dim=1)
             res_blocks = self.reward_predictor_block_one(block_aggregation)
-            res_blocks = torch.cat([res_blocks, llm_encode], dim=1)
             res_blocks = self.reward_predictor_block_two(res_blocks)
             res_graph = self.graph_predictor(aggregation)
         else:
