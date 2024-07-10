@@ -129,7 +129,6 @@ class TransformerEncoder(nn.Module):
         out = self.positional_encoder(embed_out)
         for layer in self.layers:
             out = layer(out,out,out)
-
         return out  #32x10x512
 
 class DecoderBlock(nn.Module):
@@ -168,12 +167,11 @@ class DecoderBlock(nn.Module):
         
         out = self.transformer_block(key, query, value)
 
-        
         return out
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=2, n_heads=8, out_dim=64):
+    def __init__(self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=2, n_heads=8, out_dim=16):
         super(TransformerDecoder, self).__init__()
         """  
         Args:
@@ -209,17 +207,21 @@ class TransformerDecoder(nn.Module):
             out: output vector
         """
             
-        
+        x = self.decode(x, enc_out, mask)
+
+        out = F.relu(self.fc_out(x))
+
+        return out
+
+    def decode(self, x, enc_out, mask):
         x = self.word_embedding(x)  #32x10x512
         x = self.position_embedding(x) #32x10x512
         x = self.dropout(x)
      
         for layer in self.layers:
             x = layer(x, enc_out, enc_out, mask)
-
-        out = F.relu(self.fc_out(x))
-
-        return out
+        
+        return x
 
 class Transformer(nn.Module):
     def __init__(self, embed_dim, src_vocab_size, target_vocab_size, seq_length,num_layers=2, expansion_factor=2, n_heads=8):
@@ -288,6 +290,11 @@ class Transformer(nn.Module):
     def encode(self, src):
         enc_out = self.encoder(src)
         return enc_out
+    
+    def decode_out(self, enc_out, trg):
+        trg_mask = self.make_trg_mask(trg)
+        out = self.decoder.decode(trg, enc_out, trg_mask)
+        return out
     
     def forward(self, enc_out, trg):
         """

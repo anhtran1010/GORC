@@ -118,14 +118,16 @@ class DataraceDataset(Dataset):
             test_graphs.append(self.graphs[i])
             if self.prompts_file:
                 test_prompts.append(self.prompts[i])
-            if inference == "graph":
-                test_labels = numpy.concatenate((test_labels, self.labels[i]), axis=None)
+                labels = self.labels[i]
+                test_labels.append(labels)
+            # if inference == "graph":
+            #     test_labels = numpy.concatenate((test_labels, self.labels[i]), axis=None)
             else:
                 labels = self.labels[i]
                 test_labels.append(labels)
                 
-        if inference == "graph":
-            test_labels = torch.from_numpy(test_labels)
+        # if inference == "graph":
+        #     test_labels = torch.from_numpy(test_labels)
         # dgl_test_graph = dgl.batch(test_graphs)
         return test_graphs, test_labels, test_prompts
 
@@ -146,7 +148,9 @@ class DataraceDataset(Dataset):
 
     def k_fold(self, k=5, class_labels=None):
         # split_strat = LeaveOneOut()
-        split_strat = StratifiedKFold(k, shuffle=False)
+        split_strat = StratifiedKFold(k, shuffle=True)
+        if class_labels==None:
+            class_labels = self.labels
         fold_indices = split_strat.split(self.graphs, class_labels)
         return fold_indices
 

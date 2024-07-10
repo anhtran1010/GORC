@@ -30,39 +30,39 @@ import os
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(device)
 rf = open("runs_result.txt", "a+")
-with open("trans_noarith_line_vocabs", "rb") as f:
+with open("trans_noarith_vocabs", "rb") as f:
         vocab = pickle.load(f)
 
 def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=4):
-    if inference=="block" or inference=="line":
-        if os.path.isfile("llm_prompts.json"):
-            model = CombinedEncoder(
-                node_vocab_size=len(vocab) + 1,
-                node_hidden_size=hidden_nodes,
-                n_message_passes=n_mp,
-                n_steps=n_steps,
-                num_heads=num_heads
-            ).to(device=torch.device(device))
-        else:
-            model = GNNBlock(
-                node_vocab_size=len(vocab) + 1,
-                node_hidden_size=hidden_nodes,
-                n_message_passes=n_mp,
-                n_steps=n_steps,
-                num_heads=num_heads
-            ).to(device=torch.device(device))
-    else:
-        model = GNNEncoder(
-            # Add one to the vocab size to accomodate for the out-of-vocab element.
+    # if inference=="block" or inference=="line":
+    if os.path.isfile("llm_prompts_v2.json"):
+        model = CombinedEncoder(
             node_vocab_size=len(vocab) + 1,
             node_hidden_size=hidden_nodes,
-            # etypes = [('0', '0', '0'), ('0', '1', '1'), ('0', '2', '0'), ('1', '1', '0'), ('2', '1', '0')],
             n_message_passes=n_mp,
             n_steps=n_steps,
-            num_heads=num_heads,
-            inference=inference
+            num_heads=num_heads
         ).to(device=torch.device(device))
-    optimizer = torch.optim.AdamW(model.parameters())
+    else:
+        model = GNNBlock(
+            node_vocab_size=len(vocab) + 1,
+            node_hidden_size=hidden_nodes,
+            n_message_passes=n_mp,
+            n_steps=n_steps,
+            num_heads=num_heads
+        ).to(device=torch.device(device))
+    # else:
+    #     model = GNNEncoder(
+    #         # Add one to the vocab size to accomodate for the out-of-vocab element.
+    #         node_vocab_size=len(vocab) + 1,
+    #         node_hidden_size=hidden_nodes,
+    #         # etypes = [('0', '0', '0'), ('0', '1', '1'), ('0', '2', '0'), ('1', '1', '0'), ('2', '1', '0')],
+    #         n_message_passes=n_mp,
+    #         n_steps=n_steps,
+    #         num_heads=num_heads,
+    #         inference=inference
+    #     ).to(device=torch.device(device))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
     return model, optimizer
 
 def pretrain_data_init(inference="graph"):
@@ -87,40 +87,13 @@ def pretrain_data_init(inference="graph"):
         
 
 def data_init(inference="graph"):
-    if inference=="graph":
-        # train_set = DataraceDataset("full_train_graphs",
-        #                             "full_train_labels")
-
-
-        # test_set = DataraceDataset("test_graphs",
-        #                            "test_labels")
-
-        # test_set = DataraceDataset("indigo_notrans_hetero_graphs.bin",
-        #                             "indigo_notrans_hetero_labels")
-
-        # train_set = DataraceDataset("dataset/dataracebench_trans_noarith_hetero_graphs.bin",
-        #                            "dataset/dataracebench_trans_noarith_hetero_labels")
-        train_set = DataraceDataset("dataracebench_trans_noarith_hetero_orig_graphs_v14.bin",
-                                   "dataracebench_trans_noarith_hetero_orig_labels_v14")
-        print("num samples: ", train_set.num_samples)
-    elif inference=="node":
-        train_set = DataraceDataset("dataracebench_homo_lsnode_graphs.bin",
-                                   "dataracebench_homo_lsnode_labels")
-
-        # test_set = DataraceDataset("data_generator/graph_representations/test_graphs.bin",
-        #                            "data_generator/graph_representations/test_labels")
-        test_set = None
-    elif inference=="line":
-        prompts_file = None
-        if os.path.isfile("llm_prompts.json"):
-            prompts_file = "llm_prompts.json"
-        train_set = DataraceDataset("dataracebench_homo_line_graphs.bin",
-                                   "dataracebench_homo_line_labels",
-                                   prompts_file)
-        test_set = None
-    else:
-        train_set = DataraceDataset("dataracebench_homo_block_graphs_v2.bin",
-                                   "dataracebench_homo_block_labels_v2")
+    prompts_file = None
+    if os.path.isfile("llm_prompts_v2.json"):
+        prompts_file = "llm_prompts_v2.json"
+    train_set = DataraceDataset("homograph_graphs.bin",
+                                "homograph_labels",
+                                prompts_file)
+    test_set = None
     # train_set.split()
     return train_set, test_set
 
@@ -185,7 +158,6 @@ def model_val(data_loader, model, run_iter, plot=False):
 def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=False, validation=False, inference="graph"):
     total_time = 0
     train_loss = []
-
     for epoch in range(num_epoch):
         times = collections.defaultdict(float)
         losses = []
@@ -204,9 +176,16 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
             if graph.num_nodes() > 75000:
                 continue
             if inference == "graph":
-                labels = torch.tensor(labels, device=device)
-                labels = torch.squeeze(labels, dim=0)
-                loss = model.get_loss(graph, labels)
+                labels = torch.tensor(labels, device=device, dtype=float)
+                if os.path.isfile("llm_prompts_v2.json"):
+                    _, graph_pred, _ = model(graph, None, prompts[0])
+                    # graph_pred = torch.squeeze(graph_pred, dim=1)
+                    loss = model.loss_fn(graph_pred, labels)
+                    if not torch.isfinite(loss):
+                        print(loss)
+                        break
+                else:
+                    loss = model.get_loss(graph, labels)
             else:
                 block_labels = []
                 block_sets = []
@@ -230,7 +209,7 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
                         sample_labels.append(label)
                         sample_targets.append(prompts[0]["targets"][block_name])
                 num_pos += len(block_sets)
-                k = 2- len(block_sets)
+                k = 2 - len(block_sets)
 
                 if k > 0 and len(sample_sets) > 0:
                     if len(sample_sets) <= k:
@@ -260,14 +239,14 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
             optimizer.zero_grad()
             loss.backward()
             grad_clip = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=400.0
+                model.parameters(), max_norm=100.0
             )
             epoch_grad_clip.append(grad_clip.cpu().data.numpy())
             optimizer.step()
             times["model_backward"] += time.time() - t1
             t1 = time.time()
             torch.cuda.empty_cache() 
-            del block_preds
+            # del block_preds
             # if i == break_iter:
             #     break
         avg_loss = np.mean(losses)
@@ -409,6 +388,7 @@ def test(train_set, model, cross_val=False, ensemble=False, model_importance=Non
         labels = []
         for graph, label, prompt in zip(val_graphs, truth_labels, prompts):
             if graph.num_nodes() > 75000:
+                print("skip")
                 continue
             graph = graph.to(device=device)
             if graph is None:
@@ -429,8 +409,9 @@ def test(train_set, model, cross_val=False, ensemble=False, model_importance=Non
                 predictions.append(final_pred)
             else:
                 if inference == "graph":
+                    labels.append(label)
                     with torch.no_grad():
-                        output, _ = model(graph, label)
+                        _, output, _ = model(graph, None, prompt)
                     output = output.detach().cpu()
                 else:
                     block_sets = []
@@ -469,9 +450,8 @@ def test(train_set, model, cross_val=False, ensemble=False, model_importance=Non
     if ensemble:
         predictions = torch.concatenate(predictions)
     else:
-        predictions = torch.squeeze(torch.concatenate(predictions), dim=1)
-    if inference == "block" or inference=="line":
-        truth_labels =  torch.tensor(labels, dtype=torch.float)
+        predictions = torch.concatenate(predictions)
+    truth_labels =  torch.tensor(labels, dtype=torch.float)
     accuracy, precision, recall = metrics(truth_labels, predictions)
     return accuracy, precision, recall
 
@@ -512,13 +492,13 @@ if __name__ == "__main__":
         description='Simple Driver program that trains a GCN to predict the data race condition')
     parser.add_argument('-np', '--num-processes', help='Number of processes to use for training', type=int, default=0)
     parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=3)
-    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=2)
+    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=3)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
     parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=5)
     parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=1)
     parser.add_argument('-d', '--device', type=str, help='Device to use for training', default="cpu")
     parser.add_argument('-hn', '--hidden-nodes', type=int, help='Number of hidden nodes per layers', default=64)
-    parser.add_argument('-i', '--inference', type=str, help='What type of inference are being performed', default="line")
+    parser.add_argument('-i', '--inference', type=str, help='What type of inference are being performed', default="graph")
     parser.add_argument('-k', '--k-fold', type=int, help='Number of k for cross validation. If k is 0, use indigo bench', default=0)
     parser.add_argument('-ht', '--hyperparams-tuning', type=bool, help='If we want to do training or param tuning', default=False)
     parser.add_argument('-en', '--ensemble', type=bool, help='If we want to use ensemble method', default=False)
@@ -536,7 +516,7 @@ if __name__ == "__main__":
     print(k)
     hyperparams_tuning = args.hyperparams_tuning
     train_set, test_set = data_init(inference=inference)
-    pretrain_loader = pretrain_data_init(inference=inference)
+    # pretrain_loader = pretrain_data_init(inference=inference)
     if hyperparams_tuning:
         train_loader = DataLoader(
             train_set,
@@ -549,20 +529,23 @@ if __name__ == "__main__":
         rf.close()
         exit()
 
-    for epoch in [70]:
+    for epoch in [80]:
         all_precision = []
         all_accuracy = []
         all_recall = []
         for i in range(num_runs):
             print("Begin run {}".format(i))
             if k>0:
-                class_labels = []
-                for label in train_set.labels:
-                    if (np.array(label)==1).any():
-                        class_labels.append(1)
-                    else:
-                        class_labels.append(0)
-                fold_indices = train_set.k_fold(k, class_labels)
+                if inference=="graph":
+                    fold_indices = train_set.k_fold(k)
+                else:
+                    class_labels = []
+                    for label in train_set.labels:
+                        if (np.array(label)==1).any():
+                            class_labels.append(1)
+                        else:
+                            class_labels.append(0)
+                    fold_indices = train_set.k_fold(k, class_labels)
                 for fold_num, (train_index, test_index) in enumerate(fold_indices):
                     print("fold num: ", fold_num+1)
                     train_set.set_train_test_folds(train_index, test_index)

@@ -24,7 +24,7 @@ class GNNEncoder(nn.Module):
             etypes=[('0', '0', '0'), ('0', '1', '1'), ('0', '2', '0'), ('1', '1', '0'), ('2', '1', '0'), ('3', '3', '1'), ('3', '3', '2'), ('3', '3', '3')],
             n_message_passes=2,
             reward_dim=1,
-            gnn_type="GraphSAGE",
+            gnn_type="Combination",
             predictor="MLP",
             feat_drop=0.0,
             num_heads=4,
@@ -124,31 +124,45 @@ class GNNEncoder(nn.Module):
                     conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
                 self.ggcnn.append(conv_layer)
 
-        elif self.gnn_type=="Combination":            
-            # gat = dgl.nn.pytorch.conv.GATv2Conv(
-            #             in_feats=self.node_hidden_size,
-            #             out_feats=self.node_hidden_size,
-            #             num_heads=self.num_heads,
-            #             feat_drop=0.3,
-            #             attn_drop=0.3,
-            #             residual=True,
-            #             activation=nn.ReLU(),
-            #             allow_zero_in_degree=True,
-            #         )
-            # if self.heterograph:
-            #     mods_dict_conv = {}
-            #     for i in range(num_node_type):
-            #         mods_dict_conv[str(i)] = gat
-            #     gat =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
+        elif self.gnn_type=="RelGraphConv":
+            self.ggcnn = nn.ModuleList([])
+            for i in range(self.n_message_passes):
+                conv_layer = dgl.nn.pytorch.conv.RelGraphConv(
+                    in_feat=self.node_hidden_size,
+                    out_feat=self.node_hidden_size,
+                    num_rels=self.n_etypes,
+                    regularizer="bdd",
+                    num_bases=self.n_etypes,
+                    activation=nn.ReLU(),
+                    dropout=0.2
+                )
+                if self.heterograph:
+                    mods_dict_conv = {}
+                    for i in range(num_node_type):
+                        mods_dict_conv[str(i)] = conv_layer
+                    conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
+                self.ggcnn.append(conv_layer)
 
-            # self.ggcnn = nn.ModuleList([gat])
-            conv_layer = dgl.nn.pytorch.conv.GatedGraphConv(
-                  in_feats=self.node_hidden_size,
-                  out_feats=self.node_hidden_size,
-                  n_steps=self.n_steps-1,
-                  n_etypes=self.n_etypes,
-              )
-            self.ggcnn = nn.ModuleList([conv_layer])
+        elif self.gnn_type=="Combination":            
+            self.ggcnn = nn.ModuleList([])
+            for i in range(self.n_message_passes-1):
+                conv_layer = dgl.nn.pytorch.conv.SAGEConv(
+                        in_feats=self.node_hidden_size,
+                        out_feats=self.node_hidden_size,
+                        aggregator_type="lstm",
+                        activation=nn.ReLU()
+                    )
+                # conv_layer = dgl.nn.pytorch.conv.RelGraphConv(
+                #     in_feat=self.node_hidden_size,
+                #     out_feat=self.node_hidden_size,
+                #     num_rels=self.n_etypes,
+                #     regularizer="basis",
+                #     num_bases=self.n_etypes,
+                #     activation=nn.ReLU(),
+                #     dropout=0.2
+                # )
+                self.ggcnn.append(conv_layer)
+
             # conv_layer = dgl.nn.pytorch.conv.GraphConv(
             #     in_feats=self.node_hidden_size,
             #     out_feats=self.node_hidden_size,
@@ -163,10 +177,6 @@ class GNNEncoder(nn.Module):
             #     for i in range(num_node_type):
             #         mods_dict_conv[str(i)] = conv_layer
             #     conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
-
-            # for i in range(self.n_message_passes-1):
-            #     self.ggcnn.append(conv_layer)
-            # self.ggcnn.append(conv_layer)
             gat = dgl.nn.pytorch.conv.GATv2Conv(
                         in_feats=self.node_hidden_size,
                         out_feats=self.node_hidden_size,
@@ -182,6 +192,7 @@ class GNNEncoder(nn.Module):
                 for i in range(num_node_type):
                     mods_dict_conv[str(i)] = gat
                 gat =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
+            # self.ggcnn.append(gat)
             self.ggcnn.append(gat)
         else:
           raise NotImplementedError("")
@@ -357,7 +368,7 @@ class GNNEncoder(nn.Module):
     def combine_loss(self, graph_pred, graph_label, block_preds, block_labels, cluster_loss=0):
         graph_pred = torch.squeeze(graph_pred, dim=1)
         block_preds = torch.squeeze(block_preds, dim=1)
-        return 0.8 * self.loss_fn(block_preds, block_labels) + 0.2 * self.loss_fn(graph_pred, graph_label) + 0.1 * cluster_loss
+        return 0.7 * self.loss_fn(block_preds, block_labels) + 0.3 * self.loss_fn(graph_pred, graph_label) + 0.1 * cluster_loss
 
     def featurize_nodes(self, g):
         # This is very CompilerGym specific, can be rewritten for other tasks
@@ -399,7 +410,7 @@ class GNNEncoder(nn.Module):
                 intermediate = [dgl.max_nodes(g, "feat")]
 
         for i, layer in enumerate(self.ggcnn):
-            if self.gnn_type=="GatedGraphConv":
+            if self.gnn_type=="GatedGraphConv" or self.gnn_type=="RelGraphConv":
                 if self.heterograph:
                     for node_type in g.ndata["feat"].keys():
                         res = layer(g, res)
@@ -415,7 +426,7 @@ class GNNEncoder(nn.Module):
                     else:
                         res = torch.mean(res, dim=1)
                 else:
-                    res = layer(g, res, g.edata["flow"])
+                    res = layer(g, res)
                     # res = layer(g, res)
             else:
                 res = layer(g, res)
