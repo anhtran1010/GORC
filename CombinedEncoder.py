@@ -73,7 +73,6 @@ class CombinedEncoder(GNNEncoder):
                 nn.Linear(512, self.embed_dim))
         
         self.llm_predictor = nn.Sequential(
-                nn.LayerNorm(512),
                 nn.Dropout(p=0.4),
                 nn.Linear(512, self.reward_dim))
 
@@ -124,11 +123,13 @@ class CombinedEncoder(GNNEncoder):
                 llm_mask = self.min_compare(res_llm)
                 res_out = torch.where(llm_mask<graph_mask, res_llm, res_graph)
             else:
+                # llm_encode, _ = torch.max(llm_encode, dim=0)
+                # llm_encode = torch.mean(llm_encode, dim=0)
                 llm_encoding = self.llm_trans(llm_encode)
+                llm_encoding, _ = llm_encoding.max(dim=0)
                 if llm_encoding.shape[0] == 0:
                     print(llm_encoding)
                     print(prompts)
-                llm_encoding = llm_encoding.mean(dim=0)
                 # res_llm = nn.functional.sigmoid(self.llm_predictor(llm_encode).sum(dim=0))
                 # if torch.isnan(res_llm):
                 #     print(res_llm)
@@ -137,8 +138,9 @@ class CombinedEncoder(GNNEncoder):
                 # graph_aggregation = F.leaky_relu(aggregation * llm_encoding)
                 if not torch.isfinite(graph_aggregation).any():
                     print(graph_aggregation)
-                res_out = nn.functional.sigmoid(self.graph_predictor(graph_aggregation)).squeeze(0)
-                res_graph = aggregation
+                res_out = self.graph_predictor(graph_aggregation).squeeze(0)
+                res_graph = nn.functional.sigmoid(self.reward_predictor_block_two(aggregation)).squeeze(0)
+                res_llm = self.llm_predictor(llm_encode)
                 # graph_mask = self.min_compare(res_graph)
                 # llm_mask = self.min_compare(res_llm)
                 # res_out = torch.where(llm_mask<graph_mask, res_llm, res_graph)
@@ -154,9 +156,9 @@ class CombinedEncoder(GNNEncoder):
             aggregation = 0
         # res = self.output_norm(res)
 
-        if not self.train:
-            res = self.output_norm(res)
-        return res_graph, res_out, total_loss
+        if not self.training:
+            res_out = self.output_norm(res_out)
+        return res_llm, res_out, res_graph
 
     def min_compare(self, output):
         one_distance = 1 - output

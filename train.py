@@ -16,7 +16,9 @@ import pickle
 import matplotlib.pyplot as plt
 import copy
 import itertools
-
+from dgl.data.utils import load_graphs
+import json
+from balance_sampler import BalancedSampler
 from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.model_selection import GridSearchCV
 
@@ -25,7 +27,8 @@ from skopt.space import Categorical
 
 import pandas as pd
 import os
-
+import dgl
+from  torch.optim.lr_scheduler import ReduceLROnPlateau
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(device)
@@ -62,7 +65,7 @@ def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=
     #         num_heads=num_heads,
     #         inference=inference
     #     ).to(device=torch.device(device))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0.0001, amsgrad=True)
     return model, optimizer
 
 def pretrain_data_init(inference="graph"):
@@ -158,6 +161,7 @@ def model_val(data_loader, model, run_iter, plot=False):
 def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=False, validation=False, inference="graph"):
     total_time = 0
     train_loss = []
+    scheduler = ReduceLROnPlateau(optimizer, 'min')
     for epoch in range(num_epoch):
         times = collections.defaultdict(float)
         losses = []
@@ -166,90 +170,99 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
         model.train()
         num_pos = 0
         num_neg = 0
-        for i, data in enumerate(data_loader):
-            if data is None:
+        for i, data_batch in enumerate(data_loader):
+            if data_batch is None:
                 continue
-            graph, labels, prompts = data
-            times["get_data"] += time.time() - t1
-            t1 = time.time()
-            graph = graph.to(device=device)
-            if graph.num_nodes() > 75000:
-                continue
-            if inference == "graph":
-                labels = torch.tensor(labels, device=device, dtype=float)
-                if os.path.isfile("llm_prompts_v2.json"):
-                    _, graph_pred, _ = model(graph, None, prompts[0])
-                    # graph_pred = torch.squeeze(graph_pred, dim=1)
-                    loss = model.loss_fn(graph_pred, labels)
-                    if not torch.isfinite(loss):
-                        print(loss)
-                        break
-                else:
-                    loss = model.get_loss(graph, labels)
-            else:
-                block_labels = []
-                block_sets = []
-                sample_sets = []
-                sample_labels = []
-                sample_targets = []
-                targets = []
-                for i, block_label in enumerate(labels[0].items()):
-                    block_name, label = block_label[0], block_label[1]
-                    if inference == "block":
-                        mask = graph.ndata["block_name"] == block_name
-                    elif inference == "line":
-                        mask = graph.ndata["line"] == int(block_name)
-                    node_idx = graph.nodes()[mask]
-                    if label == 1:
-                        block_sets.append(node_idx)
-                        block_labels.append(label)
-                        targets.append(prompts[0]["targets"][block_name])
+            graphs, labels, prompts = data_batch
+            for graph, label, prompt in zip(dgl.unbatch(graphs), labels, prompts):
+                times["get_data"] += time.time() - t1
+                t1 = time.time()
+                graph = graph.to(device=device)
+                if graph.num_nodes() > 75000:
+                    continue
+                if inference == "graph":
+                    label = torch.tensor([label], device=device, dtype=float)
+                    # if labels == 1:
+                    #     num_pos += 1
+                    # else:
+                    #     num_neg += 1
+                    if os.path.isfile("llm_prompts_v2.json"):
+                        _, graph_pred, _ = model(graph, None, prompt)
+                        # graph_pred = torch.squeeze(graph_pred, dim=1)
+                        loss = model.loss_fn(graph_pred, label)
+                        if not torch.isfinite(loss):
+                            print(loss)
+                            break
                     else:
-                        sample_sets.append(node_idx)
-                        sample_labels.append(label)
-                        sample_targets.append(prompts[0]["targets"][block_name])
-                num_pos += len(block_sets)
-                k = 2 - len(block_sets)
-
-                if k > 0 and len(sample_sets) > 0:
-                    if len(sample_sets) <= k:
-                        block_sets = block_sets + sample_sets
-                        block_labels += sample_labels
-                        targets += sample_targets
-                        num_neg += len(sample_sets)
-                    else:
-                        sample_idx = np.random.choice(len(sample_sets), k, replace=False)
-                        num_neg += k
-                        for idx in sample_idx:
-                            block_sets.append(sample_sets[idx])
-                            block_labels.append(sample_labels[idx])
-                            targets.append(sample_targets[idx])
-                if os.path.isfile("llm_prompts.json"):
-                    graph_pred, block_preds, cluster_loss = model(graph, block_sets, prompts[0], targets)
+                        loss = model.get_loss(graph, label)
                 else:
-                    graph_pred, block_preds, cluster_loss = model(graph, block_sets)
-                block_labels = torch.tensor(block_labels, device=device, dtype=torch.float)
-                global_label = torch.tensor([1], device=device, dtype=torch.float) if (block_labels==1).any() else torch.tensor([0], device=device, dtype=torch.float)
-                # graph_pred, _ = model(graph)
-                loss = model.combine_loss(graph_pred, global_label, block_preds, block_labels, cluster_loss)
+                    block_labels = []
+                    block_sets = []
+                    sample_sets = []
+                    sample_labels = []
+                    sample_targets = []
+                    targets = []
+                    for i, block_label in enumerate(label[0].items()):
+                        block_name, label = block_label[0], block_label[1]
+                        if inference == "block":
+                            mask = graph.ndata["block_name"] == block_name
+                        elif inference == "line":
+                            mask = graph.ndata["line"] == int(block_name)
+                        node_idx = graph.nodes()[mask]
+                        if label == 1:
+                            block_sets.append(node_idx)
+                            block_labels.append(label)
+                            targets.append(prompt["targets"][block_name])
+                        else:
+                            sample_sets.append(node_idx)
+                            sample_labels.append(label)
+                            sample_targets.append(prompt["targets"][block_name])
+                    num_pos += len(block_sets)
+                    k = 2 - len(block_sets)
 
-            times["model_forward"] += time.time() - t1
-            t1 = time.time()
-            losses.append(loss.cpu().data.numpy())
-            optimizer.zero_grad()
-            loss.backward()
-            grad_clip = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=100.0
-            )
-            epoch_grad_clip.append(grad_clip.cpu().data.numpy())
-            optimizer.step()
-            times["model_backward"] += time.time() - t1
-            t1 = time.time()
-            torch.cuda.empty_cache() 
+                    if k > 0 and len(sample_sets) > 0:
+                        if len(sample_sets) <= k:
+                            block_sets = block_sets + sample_sets
+                            block_labels += sample_labels
+                            targets += sample_targets
+                            num_neg += len(sample_sets)
+                        else:
+                            sample_idx = np.random.choice(len(sample_sets), k, replace=False)
+                            num_neg += k
+                            for idx in sample_idx:
+                                block_sets.append(sample_sets[idx])
+                                block_labels.append(sample_labels[idx])
+                                targets.append(sample_targets[idx])
+                    if os.path.isfile("llm_prompts.json"):
+                        graph_pred, block_preds, cluster_loss = model(graph, block_sets, prompt, targets)
+                    else:
+                        graph_pred, block_preds, cluster_loss = model(graph, block_sets)
+                    block_labels = torch.tensor(block_labels, device=device, dtype=torch.float)
+                    global_label = torch.tensor([1], device=device, dtype=torch.float) if (block_labels==1).any() else torch.tensor([0], device=device, dtype=torch.float)
+                    # graph_pred, _ = model(graph)
+                    loss = model.combine_loss(graph_pred, global_label, block_preds, block_labels, cluster_loss)
+                times["model_forward"] += time.time() - t1
+                t1 = time.time()
+                losses.append(loss.cpu().data.numpy())
+                optimizer.zero_grad()
+                loss.backward()
+                grad_clip = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=100.0
+                )
+                epoch_grad_clip.append(grad_clip.cpu().data.numpy())
+                optimizer.step()
+                times["model_backward"] += time.time() - t1
+                t1 = time.time()
+                torch.cuda.empty_cache() 
             # del block_preds
             # if i == break_iter:
             #     break
+            break
+        # print("number of negative sample: ", num_neg)
+        # print("number of positive sample: ", num_pos)
+
         avg_loss = np.mean(losses)
+        scheduler.step(avg_loss)
         train_loss.append(avg_loss)
         for time_epoch in times.values():
             total_time += time_epoch
@@ -266,82 +279,16 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
     return model
 
 def train_procedure(train_set, model, optimizer, num_epoch, run_iter, inference="graph", ensemble=True):
-    if ensemble:
-        train_loss = []
-        model_list = []
-        model_importance = []
-        weights = []
-        old_state_dict = None
-        original_set = copy.deepcopy(train_set)
-        for m in range(7):
-            print(len(train_set))
-            num_train_samples = 70
-            if m > 0:
-                weak_model.load_state_dict(old_state_dict)
-                optimizer = torch.optim.AdamW(weak_model.parameters())
-            else:
-                weights = torch.full((len(train_set), ), 1/len(train_set), device=device)
-                weight_indices = torch.arange(num_train_samples, device=device)
-
-            data_loader = DataLoader(
-                train_set,
-                batch_size=1,
-                shuffle=False,
-                num_workers=0,
-                collate_fn=train_set.collate_fn
-            )
-
-            weak_model = copy.deepcopy(model)
-            weak_model = train(data_loader, weak_model, optimizer, num_epoch, num_train_samples-1)
-
-            weak_model.eval()
-            model_list.append(weak_model)
-            weight_sum = 0
-            total_incorrect = []
-            for i, data in enumerate(data_loader):
-                if data is None:
-                    continue 
-                graph, labels = data
-                num_nodes = graph.num_nodes()
-                graph = graph.to(device=device)
-                labels = torch.tensor(labels, device=device)
-                labels = torch.squeeze(labels, dim=0)
-                with torch.no_grad():
-                    output, _ = weak_model(graph)
-                predictions = torch.squeeze(output, dim=1)
-                if (labels==1).any():
-                    score = binary_precision(predictions, labels, threshold=0.5)
-                else:
-                    score = binary_accuracy(predictions, labels, threshold=0.5)
-                total_incorrect.append(1-score)
-                if i == num_train_samples-1:
-                    break
-
-            e_m = torch.sum(torch.tensor(total_incorrect, device=device)*weights[weight_indices])
-            a = torch.log((1-e_m)/(e_m+0.01))/2  
-
-            for i, wi in enumerate(weight_indices):
-                score = total_incorrect[i]
-                weights[wi] *= (a*score*5).exp()
-
-            weights /= torch.sum(weights)
-            model_importance.append(a)
-            train_set, weight_indices = original_set.subset(weights, num_train_samples)
-            weight_indices = torch.from_numpy(weight_indices).to(device=device)
-            old_state_dict = copy.deepcopy(weak_model.state_dict())
-        return model_list, model_importance
-
-    else:
-        data_loader = DataLoader(
-                train_set,
-                batch_size=1,
-                shuffle=False,
-                num_workers=0,
-                collate_fn=train_set.collate_fn
-            )
-        
-        model = train(data_loader, model, optimizer, num_epoch, 100, run_iter=run_iter, inference=inference, plot=True)
-        return model, None
+    sampler = BalancedSampler(train_set, batch_size=250)
+    data_loader = DataLoader(
+            train_set,
+            batch_size=250,
+            sampler=sampler,
+            collate_fn=train_set.collate_fn
+        )
+    
+    model = train(data_loader, model, optimizer, num_epoch, 300, run_iter=run_iter, inference=inference, plot=True)
+    return model, None
 
 def hyper_tuning(data_loader):
     train_graphs = []
@@ -393,46 +340,31 @@ def test(train_set, model, cross_val=False, ensemble=False, model_importance=Non
             graph = graph.to(device=device)
             if graph is None:
                 continue
-            if ensemble:
-                final_pred = []
-                for m, a in zip(model, model_importance):
-                    with torch.no_grad():
-                        output, _ = m(graph)
-                    output = output.detach().cpu()
-                    output = torch.squeeze(output, dim=1)
-                    output = torch.where(output>0.5, 1, -1)
-                    a = a.to(device="cpu")
-                    output = output* a
-                    final_pred.append(output)
-                final_pred = torch.sum(torch.stack(final_pred, dim=0), dim=0)
-                final_pred = torch.where(final_pred>0,1,0)
-                predictions.append(final_pred)
+            if inference == "graph":
+                labels.append(label)
+                with torch.no_grad():
+                    _, output, _ = model(graph, None, prompt)
+                output = output.detach().cpu()
             else:
-                if inference == "graph":
+                block_sets = []
+                targets = []
+                for i, block_label in enumerate(label.items()):
+                    block_name, label = block_label[0], block_label[1]
+                    if inference == "block":
+                        mask = graph.ndata["block_name"]==block_name
+                    else:
+                        mask = graph.ndata["line"]== int(block_name)
+                    node_idx = graph.nodes()[mask]
+                    block_sets.append(node_idx)
                     labels.append(label)
-                    with torch.no_grad():
-                        _, output, _ = model(graph, None, prompt)
-                    output = output.detach().cpu()
-                else:
-                    block_sets = []
-                    targets = []
-                    for i, block_label in enumerate(label.items()):
-                        block_name, label = block_label[0], block_label[1]
-                        if inference == "block":
-                            mask = graph.ndata["block_name"]==block_name
-                        else:
-                            mask = graph.ndata["line"]== int(block_name)
-                        node_idx = graph.nodes()[mask]
-                        block_sets.append(node_idx)
-                        labels.append(label)
-                        targets.append(prompt["targets"][block_name])
-                    with torch.no_grad():
-                        if os.path.isfile("llm_prompts.json"):
-                            _, block_preds, _= model(graph, block_sets, prompt, targets)
-                        else:
-                            _, block_preds, _= model(graph, block_sets)
-                    output = block_preds.detach().cpu()
-                predictions.append(output)
+                    targets.append(prompt["targets"][block_name])
+                with torch.no_grad():
+                    if os.path.isfile("llm_prompts.json"):
+                        _, block_preds, _= model(graph, block_sets, prompt, targets)
+                    else:
+                        _, block_preds, _= model(graph, block_sets)
+                output = block_preds.detach().cpu()
+            predictions.append(output)
     else:
         truth_labels = []
         for graph, label in data_loader:
@@ -479,6 +411,27 @@ def metrics(truth_labels, predictions):
     precision = binary_precision(predictions, truth_labels)
     recall = binary_recall(predictions, truth_labels)
     return accuracy, precision, recall
+
+def NPB_test(model, inference="graph"):
+    test_graphs = load_graphs("NPB.bin")[0]
+    predictions = []
+    inference_times = []
+    model.eval()
+    with open("NPB_prompt.json") as pf:
+        test_prompts = json.load(pf)
+    for graph, prompt in zip(test_graphs, test_prompts):
+        start = time.time()
+        graph = graph.to(device=device)
+        if inference == "graph":
+            with torch.no_grad():
+                _, output, _ = model(graph, None, prompt)
+            output = output.detach().cpu()
+            rounded_prediction = torch.round(output)
+            predictions.append(rounded_prediction)
+        end = time.time()- start
+        inference_times.append(end)
+    print("NPB predictions result: ", predictions)
+    print("NPB inference time result: ", inference_times)
 
 def safe_div(x, y):
     if y == 0:
@@ -529,7 +482,7 @@ if __name__ == "__main__":
         rf.close()
         exit()
 
-    for epoch in [80]:
+    for epoch in [90]:
         all_precision = []
         all_accuracy = []
         all_recall = []
@@ -552,6 +505,7 @@ if __name__ == "__main__":
                     untrained_model, optimizer = model_init(n_mp=n_message_passes, n_steps=n_steps,
                                         hidden_nodes=hidden_nodes, inference=inference)
                     trained_model, a = train_procedure(train_set, untrained_model, optimizer, num_epoch=epoch, run_iter=fold_num+11, inference=inference, ensemble=emsemble)
+                    torch.save(trained_model.state_dict(), "models/Combination_model.pt")
                     # untrained_model, optimizer = model_init(n_mp=n_pass, n_steps=n_pass,
                     #                         hidden_nodes=hidden_nodes, graph_inference=graph_inference)
                     # trained_model = train(train_loader, untrained_model, optimizer, epochs, fold_num+1, graph_inference)
@@ -560,10 +514,8 @@ if __name__ == "__main__":
                     # refined_model = train(pretrain_loader, trained_model, optimizer, num_epoch=2, run_iter=fold_num+11, graph_inference=graph_inference)
                     
                     # refined_model = train(train_loader, trained_model, optimizer, epochs, fold_num+1, graph_inference)
-                    if emsemble:
-                        accuracy, precision, recall = test(train_set, trained_model, cross_val=True, model_importance=a)
-                    else:
-                        accuracy, precision, recall = test(train_set, trained_model, cross_val=True, inference=inference)
+                    accuracy, precision, recall = test(train_set, trained_model, cross_val=True, inference=inference)
+                    NPB_test(trained_model)
                     all_precision.append(precision)
                     all_accuracy.append(accuracy)
                     all_recall.append(recall)

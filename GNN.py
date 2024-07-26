@@ -145,38 +145,6 @@ class GNNEncoder(nn.Module):
 
         elif self.gnn_type=="Combination":            
             self.ggcnn = nn.ModuleList([])
-            for i in range(self.n_message_passes-1):
-                conv_layer = dgl.nn.pytorch.conv.SAGEConv(
-                        in_feats=self.node_hidden_size,
-                        out_feats=self.node_hidden_size,
-                        aggregator_type="lstm",
-                        activation=nn.ReLU()
-                    )
-                # conv_layer = dgl.nn.pytorch.conv.RelGraphConv(
-                #     in_feat=self.node_hidden_size,
-                #     out_feat=self.node_hidden_size,
-                #     num_rels=self.n_etypes,
-                #     regularizer="basis",
-                #     num_bases=self.n_etypes,
-                #     activation=nn.ReLU(),
-                #     dropout=0.2
-                # )
-                self.ggcnn.append(conv_layer)
-
-            # conv_layer = dgl.nn.pytorch.conv.GraphConv(
-            #     in_feats=self.node_hidden_size,
-            #     out_feats=self.node_hidden_size,
-            #     norm='both', 
-            #     weight=True, 
-            #     bias=True,
-            #     # activation=nn.LeakyReLU(),
-            #     allow_zero_in_degree=True
-            # )
-            # if self.heterograph:
-            #     mods_dict_conv = {}
-            #     for i in range(num_node_type):
-            #         mods_dict_conv[str(i)] = conv_layer
-            #     conv_layer =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
             gat = dgl.nn.pytorch.conv.GATv2Conv(
                         in_feats=self.node_hidden_size,
                         out_feats=self.node_hidden_size,
@@ -194,6 +162,39 @@ class GNNEncoder(nn.Module):
                 gat =  dgl.nn.HeteroGraphConv(mods_dict_conv, aggregate='sum')
             # self.ggcnn.append(gat)
             self.ggcnn.append(gat)
+            for i in range(self.n_message_passes-1):
+                # conv_layer = dgl.nn.pytorch.conv.SAGEConv(
+                #         in_feats=self.node_hidden_size,
+                #         out_feats=self.node_hidden_size,
+                #         aggregator_type="lstm",
+                #         activation=nn.ReLU()
+                #     )
+                # conv_layer = dgl.nn.pytorch.conv.GatedGraphConv(
+                #   in_feats=self.node_hidden_size,
+                #   out_feats=self.node_hidden_size,
+                #   n_steps=self.n_steps,
+                #   n_etypes=self.n_etypes,
+                # )
+                # conv_layer = dgl.nn.pytorch.conv.RelGraphConv(
+                #     in_feat=self.node_hidden_size,
+                #     out_feat=self.node_hidden_size,
+                #     num_rels=self.n_etypes,
+                #     regularizer="basis",
+                #     num_bases=self.n_etypes,
+                #     activation=nn.ReLU(),
+                #     dropout=0.2
+                # )
+                conv_layer = dgl.nn.pytorch.conv.GraphConv(
+                    in_feats=self.node_hidden_size,
+                    out_feats=self.node_hidden_size,
+                    norm='both', 
+                    weight=True, 
+                    bias=True,
+                    # activation=nn.LeakyReLU(),
+                    allow_zero_in_degree=True
+                )
+                self.ggcnn.append(conv_layer)
+                
         else:
           raise NotImplementedError("")
 
@@ -219,18 +220,18 @@ class GNNEncoder(nn.Module):
         self.output_norm = nn.Sigmoid()
         if self.predictor == "MLP":
             self.reward_predictor_block_one = nn.Sequential(
-                nn.LayerNorm(self.embed_dim*2),
+                nn.LayerNorm(self.embed_dim),
                 nn.Dropout(p=0.3),
-                nn.Linear(self.embed_dim*2, 32),
+                nn.Linear(self.embed_dim, 32),
                 nn.ReLU())
 
             self.reward_predictor_block_two = nn.Sequential(
                 # nn.BatchNorm1d(self.node_hidden_size),
-                nn.LayerNorm(32),
+                nn.LayerNorm(64),
                 # nn.Softmax(dim=1),
                 # nn.ReLU(),
-                nn.Dropout(p=0.4),
-                nn.Linear(32, self.reward_dim))
+                nn.Dropout(p=0.3),
+                nn.Linear(64, self.reward_dim))
             # self.reward_predictor_block_one = nn.Sequential(
             #     nn.LayerNorm(self.embed_dim*2),
             #     nn.Dropout(p=0.3),
@@ -251,7 +252,7 @@ class GNNEncoder(nn.Module):
             raise NotImplementedError("")
         # pos_weight = nn.Parameter(torch.tensor(1.5), requires_grad=True).to(device=device)
 
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(1))
+        self.loss_fn = nn.BCEWithLogitsLoss()
         #self.loss_fn = AUCPRHingeLoss()
         # self.loss_fn = self.f1_beta
 
@@ -286,7 +287,7 @@ class GNNEncoder(nn.Module):
                             g.ndata["feat"] = res
                             aggregation=[]
                             for key, value in g.ndata["feat"].items():
-                                node_aggregation = dgl.sum_nodes(g,"feat", ntype=key)
+                                node_aggregation = dgl.max_nodes(g,"feat", ntype=key)
                                 aggregation.append(node_aggregation)
                             aggregation = torch.stack(aggregation).transpose(0,1)
                         else:
@@ -418,7 +419,7 @@ class GNNEncoder(nn.Module):
                     res = layer(g, res, g.edata["flow"])
             elif self.gnn_type=="Combination":
                 #This is for the GAT layer
-                if i == len(self.ggcnn)-1:
+                if i == 0:
                     res = layer(g, res)
                     if self.heterograph:
                         for ntype in res:
@@ -426,8 +427,8 @@ class GNNEncoder(nn.Module):
                     else:
                         res = torch.mean(res, dim=1)
                 else:
+                    # res = layer(g, res, g.edata["flow"])
                     res = layer(g, res)
-                    # res = layer(g, res)
             else:
                 res = layer(g, res)
                 if self.gnn_type=="GraphAttention":
