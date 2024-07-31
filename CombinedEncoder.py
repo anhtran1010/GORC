@@ -61,7 +61,7 @@ class CombinedEncoder(GNNEncoder):
             concat_intermediate)
 
         self.pooling = DMoNPooling([self.node_hidden_size, self.node_hidden_size], 1)
-        self.tokenizer = Tokenizer.from_file("tokenizer-datarace.json")
+        self.tokenizer = Tokenizer.from_file("drb_tokenizer.json")
         self.tokenizer.enable_truncation(max_length=4096)
         self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=2)
         self.graph_predictor = nn.Sequential(
@@ -70,6 +70,8 @@ class CombinedEncoder(GNNEncoder):
                 nn.Linear(self.embed_dim*2, self.reward_dim))
 
         self.llm_trans = nn.Sequential(
+                nn.LayerNorm(512),
+                nn.Dropout(p=0.3),
                 nn.Linear(512, self.embed_dim))
         
         self.llm_predictor = nn.Sequential(
