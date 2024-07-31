@@ -162,16 +162,15 @@ class DecoderBlock(nn.Module):
         """
         
         #we need to pass mask mask only to fst attention
-        attention, _ = self.attention(x,x,x,attn_mask=mask) #32x10x512
+        attention, _ = self.attention(x,x,x) #32x10x512
         query = self.dropout(self.norm(attention + x))
-        
         out = self.transformer_block(key, query, value)
 
         return out
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=2, n_heads=8, out_dim=16):
+    def __init__(self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=2, n_heads=8, out_dim=64):
         super(TransformerDecoder, self).__init__()
         """  
         Args:
@@ -196,7 +195,7 @@ class TransformerDecoder(nn.Module):
         self.fc_out = nn.Linear(embed_dim, out_dim)
         self.dropout = nn.Dropout(0.2)
 
-    def forward(self, x, enc_out, mask):
+    def forward(self, x, enc_out):
         
         """
         Args:
@@ -207,19 +206,13 @@ class TransformerDecoder(nn.Module):
             out: output vector
         """
             
-        x = self.decode(x, enc_out, mask)
-
+        x = self.decode(x, enc_out)
         out = F.relu(self.fc_out(x))
-
         return out
 
-    def decode(self, x, enc_out, mask):
-        x = self.word_embedding(x)  #32x10x512
-        x = self.position_embedding(x) #32x10x512
-        x = self.dropout(x)
-     
+    def decode(self, x, enc_out):
         for layer in self.layers:
-            x = layer(x, enc_out, enc_out, mask)
+            x = layer(x, enc_out, enc_out)
         
         return x
 
@@ -236,12 +229,11 @@ class Transformer(nn.Module):
            num_layers: number of encoder layers
            expansion_factor: factor which determines number of linear layers in feed forward layer
            n_heads: number of heads in multihead attention
-        
         """
         
         self.target_vocab_size = target_vocab_size
 
-        self.encoder = TransformerEncoder(seq_length, src_vocab_size, embed_dim, num_layers=num_layers, expansion_factor=expansion_factor, n_heads=n_heads)
+        self.encoder = TransformerEncoder(seq_length, src_vocab_size, 512, num_layers=num_layers, expansion_factor=expansion_factor, n_heads=n_heads)
         self.decoder = TransformerDecoder(target_vocab_size, embed_dim, seq_length, num_layers=num_layers, expansion_factor=expansion_factor, n_heads=n_heads)
         
     
@@ -304,6 +296,5 @@ class Transformer(nn.Module):
         out:
             out: final vector which returns probabilities of each target word
         """
-        trg_mask = self.make_trg_mask(trg)
-        outputs = self.decoder(trg, enc_out, trg_mask)
+        outputs = self.decoder(trg, enc_out)
         return outputs

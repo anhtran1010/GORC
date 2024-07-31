@@ -9,7 +9,7 @@ from typing import overload
 import json
 
 class DataraceDataset(Dataset):
-    def __init__(self, graph_file: str, labels_file: str, prompts_file=None, transform=None):
+    def __init__(self, graph_file, labels_file: str, prompts_file=None, names_file=None, transform=None):
         """
         Arguments:
             graph_file (string): The file that contains all the graphs.
@@ -28,17 +28,22 @@ class DataraceDataset(Dataset):
         self.isSplit = False
         self.transform = transform
         self.prompts_file = None
+        self.names_file = None
         if isinstance(graph_file, str):
             self.graph_file = graph_file
             self.labels_file = labels_file
             if prompts_file:
                 self.prompts_file = prompts_file
+            if names_file:
+                self.names_file = names_file
             self.initialize_dataset()
         else:
             self.graphs = graph_file
             self.labels = labels_file
             if prompts_file:
                 self.prompts = prompts_file
+            if names_file:
+                self.names_file = names_file
             self.num_samples = len(self.graphs)    
 
     def __len__(self):
@@ -60,20 +65,29 @@ class DataraceDataset(Dataset):
         graph = self.graphs[idx]
         label = self.labels[idx]
         prompt = None
+        name = None
         if self.prompts_file:
             prompt = self.prompts[idx]
+        if self.names_file:
+            name = self.names[idx]
         isList = isinstance(label, numpy.ndarray)
         if isList:
             assert len(label) == graph.num_nodes(), "number of test_labels {} does not match number of nodes {}".format(len(label), graph.num_nodes())
         if self.transform:
             graph = self.transform(graph)
-        return {"graph": graph, "label": label, "prompt": prompt}
+        return {"graph": graph, "label": label, "prompt": prompt, "name": name}
 
     def initialize_dataset(self):
         self.graphs, _ = load_graphs(self.graph_file)
         if self.prompts_file:
             with open(self.prompts_file) as pf:
                 self.prompts = json.load(pf)
+        if self.names_file:
+            with open(self.names_file, 'rb') as nf:
+                self.names = pickle.load(nf)
+            nf.close()
+        else:
+            self.names = torch.arange(len(self.graphs))
         # for i in range(len(self.graphs)):
         #     graph = self.graphs[i]
         #     print(graph.etypes)
@@ -95,6 +109,7 @@ class DataraceDataset(Dataset):
             dgl_graph = dgl.batch([sample["graph"] for sample in samples])
             reward = []
             prompts = []
+            names = []
             for sample in samples:
                 labels = sample['label']
                 isList = isinstance(labels, numpy.ndarray)
@@ -106,36 +121,37 @@ class DataraceDataset(Dataset):
                 if self.prompts_file:
                     prompt = sample['prompt']
                     prompts.append(prompt)
-            ret = (dgl_graph, reward, prompts)
+                name = sample['name']
+                names.append(name)
+            ret = (dgl_graph, reward, prompts, names)
         return ret
 
     def get_test_set(self, inference="block"):
         test_graphs = []
         test_labels = []
         test_prompts = []
+        test_names = []
         # numpy.random.shuffle(self.test_set_idx.indices)
         for i in self.test_set_idx:
             test_graphs.append(self.graphs[i])
             if self.prompts_file:
                 test_prompts.append(self.prompts[i])
-                labels = self.labels[i]
-                test_labels.append(labels)
+            test_names.append(self.names[i])
+            labels = self.labels[i]
+            test_labels.append(labels)
             # if inference == "graph":
             #     test_labels = numpy.concatenate((test_labels, self.labels[i]), axis=None)
-            else:
-                labels = self.labels[i]
-                test_labels.append(labels)
                 
         # if inference == "graph":
         #     test_labels = torch.from_numpy(test_labels)
         # dgl_test_graph = dgl.batch(test_graphs)
-        return test_graphs, test_labels, test_prompts
+        return test_graphs, test_labels, test_prompts, test_names
 
     def get_all(self):
         labels = numpy.concatenate(self.labels, axis=None)
         labels = torch.from_numpy(labels)
         dgl_graph = dgl.batch(self.graphs)
-        return dgl_graph, labels, self.prompts
+        return dgl_graph, labels, self.prompts, self.names
 
     def split(self, seed=425443):
         self.isSplit = True
@@ -169,7 +185,11 @@ class DataraceDataset(Dataset):
         prompts = None
         if self.prompts_file:
             prompts = [self.prompts[i] for i in idx]
-        new_set = DataraceDataset(graphs, labels, prompts)
+        if self.names_file:
+            names = [self.names[i] for i in idx]
+        else:
+            names = torch.arange(len(graphs))
+        new_set = DataraceDataset(graphs, labels, prompts, names)
         return new_set, idx
 
 

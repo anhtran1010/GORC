@@ -63,9 +63,9 @@ class CombinedEncoder(GNNEncoder):
         self.pooling = DMoNPooling([self.node_hidden_size, self.node_hidden_size], 1)
         self.tokenizer = Tokenizer.from_file("tokenizer-datarace.json")
         self.tokenizer.enable_truncation(max_length=4096)
-        self.llm = Transformer(embed_dim=512, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=2)
+        self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=2)
         self.graph_predictor = nn.Sequential(
-                nn.LayerNorm(self.embed_dim*2),
+                nn.LeakyReLU(),
                 nn.Dropout(p=0.3),
                 nn.Linear(self.embed_dim*2, self.reward_dim))
 
@@ -73,9 +73,9 @@ class CombinedEncoder(GNNEncoder):
                 nn.Linear(512, self.embed_dim))
         
         self.llm_predictor = nn.Sequential(
-                nn.Dropout(p=0.4),
+                nn.Dropout(p=0.3),
                 nn.Linear(512, self.reward_dim))
-
+        
     def forward(self, g, node_idx, prompts, targets=None):
         with g.local_scope():
             res = self.encoding(g)
@@ -125,8 +125,8 @@ class CombinedEncoder(GNNEncoder):
             else:
                 # llm_encode, _ = torch.max(llm_encode, dim=0)
                 # llm_encode = torch.mean(llm_encode, dim=0)
-                llm_encoding = self.llm_trans(llm_encode)
-                llm_encoding, _ = llm_encoding.max(dim=0)
+                llm_encoding = self.llm_trans(llm_encode).mean(dim=0)
+                # llm_encoding, _ = llm_encoding.max(dim=0)
                 if llm_encoding.shape[0] == 0:
                     print(llm_encoding)
                     print(prompts)
@@ -135,10 +135,11 @@ class CombinedEncoder(GNNEncoder):
                 #     print(res_llm)
 
                 graph_aggregation = torch.cat([aggregation, llm_encoding.unsqueeze(0)], dim=1)
+                
                 # graph_aggregation = F.leaky_relu(aggregation * llm_encoding)
                 if not torch.isfinite(graph_aggregation).any():
                     print(graph_aggregation)
-                res_out = self.graph_predictor(graph_aggregation).squeeze(0)
+                res_out = nn.functional.sigmoid(self.graph_predictor(graph_aggregation)).squeeze(0)
                 res_graph = nn.functional.sigmoid(self.reward_predictor_block_two(aggregation)).squeeze(0)
                 res_llm = self.llm_predictor(llm_encode)
                 # graph_mask = self.min_compare(res_graph)
@@ -156,8 +157,8 @@ class CombinedEncoder(GNNEncoder):
             aggregation = 0
         # res = self.output_norm(res)
 
-        if not self.training:
-            res_out = self.output_norm(res_out)
+        # if not self.training:
+        #     res_out = self.output_norm(res_out)
         return res_llm, res_out, res_graph
 
     def min_compare(self, output):
