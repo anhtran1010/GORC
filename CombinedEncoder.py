@@ -40,7 +40,7 @@ class CombinedEncoder(GNNEncoder):
             predictor="MLP",
             feat_drop=0.0,
             num_heads=8,
-            concat_intermediate=False,
+            concat_intermediate=True,
             attention=False
     ):
         super(CombinedEncoder, self).__init__(
@@ -63,15 +63,19 @@ class CombinedEncoder(GNNEncoder):
         self.tokenizer = Tokenizer.from_file("drb_tokenizer.json")
         self.tokenizer.enable_truncation(max_length=4096)
         self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=2)
+        if self.concat_intermediate:
+            combined_dim = self.embed_dim + 64
+        else:
+            combined_dim = self.embed_dim*2
         self.graph_predictor = nn.Sequential(
                 nn.LeakyReLU(),
                 nn.Dropout(p=0.3),
-                nn.Linear(self.embed_dim*2, self.reward_dim))
+                nn.Linear(combined_dim, self.reward_dim))
 
         self.llm_trans = nn.Sequential(
                 nn.LayerNorm(512),
                 nn.Dropout(p=0.3),
-                nn.Linear(512, self.embed_dim))
+                nn.Linear(512, 64))
         
         self.llm_predictor = nn.Sequential(
                 nn.Dropout(p=0.3),
@@ -83,7 +87,10 @@ class CombinedEncoder(GNNEncoder):
             # adj = g.adj().to_dense()
             # _, res, adj, sp, o, c = self.pooling(res, adj)
             # res = res.squeeze(0)
-            g.ndata["feat"] = res
+            if self.concat_intermediate:
+                aggregation = torch.cat(res, axis=1)
+            else:
+                g.ndata["feat"] = res
             llm_inputs = self.tokenizer.encode(prompts["prompt"]).ids
             llm_inputs = torch.tensor(llm_inputs, device=device, dtype=int)
             llm_encode = self.llm.encode(llm_inputs)

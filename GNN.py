@@ -227,11 +227,11 @@ class GNNEncoder(nn.Module):
 
             self.reward_predictor_block_two = nn.Sequential(
                 # nn.BatchNorm1d(self.node_hidden_size),
-                nn.LayerNorm(64),
+                nn.LayerNorm(self.embed_dim),
                 # nn.Softmax(dim=1),
                 # nn.ReLU(),
                 nn.Dropout(p=0.3),
-                nn.Linear(64, self.reward_dim))
+                nn.Linear(self.embed_dim, self.reward_dim))
             # self.reward_predictor_block_one = nn.Sequential(
             #     nn.LayerNorm(self.embed_dim*2),
             #     nn.Dropout(p=0.3),
