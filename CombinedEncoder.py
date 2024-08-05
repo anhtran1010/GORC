@@ -10,8 +10,6 @@ import math
 import copy
 import numpy as np
 from GNN import GNNEncoder
-from GNN_block import GNNBlock
-from torch_geometric.nn.dense import DMoNPooling
 from race_transformer import Transformer
 import sys
 from tokenizers import Tokenizer
@@ -114,7 +112,8 @@ class CombinedEncoder(GNNEncoder):
                 # total_loss += sp + o + c
             # _, aggregation, graph_adj, spg, og, cg = self.pooling(res, adj)
             # aggregation = aggregation.squeeze(0)
-            aggregation = dgl.max_nodes(g, "feat")
+            if not self.concat_intermediate:
+                aggregation = dgl.max_nodes(g, "feat")
         # if self.attention:
         #     res, atten_weight = self.attention_layer(query=aggregation, key=aggregation, value=aggregation)
         #     res = self.attention_activation(res)

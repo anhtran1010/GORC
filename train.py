@@ -9,7 +9,6 @@ from dataset_generator import DataraceDataset
 from torch.utils.data import DataLoader
 from torcheval.metrics.functional import binary_recall, binary_precision, binary_accuracy, binary_f1_score
 from GNN import GNNEncoder
-from GNN_block import GNNBlock
 from CombinedEncoder import CombinedEncoder
 import pickle
 import matplotlib.pyplot as plt
@@ -30,22 +29,13 @@ with open("drb_vocabs", "rb") as f:
 
 def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=8):
     # if inference=="block" or inference=="line":
-    if os.path.isfile("llm_prompts_v2.json"):
-        model = CombinedEncoder(
-            node_vocab_size=len(vocab) + 1,
-            node_hidden_size=hidden_nodes,
-            n_message_passes=n_mp,
-            n_steps=n_steps,
-            num_heads=num_heads
-        ).to(device=torch.device(device))
-    else:
-        model = GNNBlock(
-            node_vocab_size=len(vocab) + 1,
-            node_hidden_size=hidden_nodes,
-            n_message_passes=n_mp,
-            n_steps=n_steps,
-            num_heads=num_heads
-        ).to(device=torch.device(device))
+    model = CombinedEncoder(
+        node_vocab_size=len(vocab) + 1,
+        node_hidden_size=hidden_nodes,
+        n_message_passes=n_mp,
+        n_steps=n_steps,
+        num_heads=num_heads
+    ).to(device=torch.device(device))
     # else:
     #     model = GNNEncoder(
     #         # Add one to the vocab size to accomodate for the out-of-vocab element.
@@ -480,7 +470,7 @@ if __name__ == "__main__":
                     accuracy, precision, recall = test(train_set, trained_model, cross_val=True, inference=inference)
                     print("--------------------------------------------------\n")
                     print("---------------Best Val Model----------------\n")
-                    accuracy, precision, recall = test(train_set, best_val_model, cross_val=True, inference=inference)
+                    test(train_set, best_val_model, cross_val=True, inference=inference)
                     print("--------------------------------------------------\n")
                     # NPB_test(trained_model)
                     all_precision.append(precision)
