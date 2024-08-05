@@ -27,7 +27,7 @@ class GNNEncoder(nn.Module):
             gnn_type="Combination",
             predictor="MLP",
             feat_drop=0.0,
-            num_heads=4,
+            num_heads=8,
             concat_intermediate=False
     ):
         super(GNNEncoder, self).__init__()
@@ -432,8 +432,11 @@ class GNNEncoder(nn.Module):
             else:
                 res = layer(g, res)
                 if self.gnn_type=="GraphAttention":
-                    for ntype in res:
-                        res[ntype] = torch.mean(res[ntype],dim=1)
+                    if self.heterograph:
+                        for ntype in res:
+                            res[ntype] = torch.mean(res[ntype],dim=1)
+                    else:
+                        res = torch.mean(res, dim=1)
             if self.concat_intermediate:
                 g.ndata["feat"] = res
                 if self.heterograph:

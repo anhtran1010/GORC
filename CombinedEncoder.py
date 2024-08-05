@@ -60,7 +60,6 @@ class CombinedEncoder(GNNEncoder):
             num_heads, 
             concat_intermediate)
 
-        self.pooling = DMoNPooling([self.node_hidden_size, self.node_hidden_size], 1)
         self.tokenizer = Tokenizer.from_file("drb_tokenizer.json")
         self.tokenizer.enable_truncation(max_length=4096)
         self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=2)
@@ -141,7 +140,7 @@ class CombinedEncoder(GNNEncoder):
                 # graph_aggregation = F.leaky_relu(aggregation * llm_encoding)
                 if not torch.isfinite(graph_aggregation).any():
                     print(graph_aggregation)
-                res_out = nn.functional.sigmoid(self.graph_predictor(graph_aggregation)).squeeze(0)
+                res_out = self.graph_predictor(graph_aggregation).squeeze(0)
                 res_graph = nn.functional.sigmoid(self.reward_predictor_block_two(aggregation)).squeeze(0)
                 res_llm = self.llm_predictor(llm_encode)
                 # graph_mask = self.min_compare(res_graph)
@@ -159,8 +158,8 @@ class CombinedEncoder(GNNEncoder):
             aggregation = 0
         # res = self.output_norm(res)
 
-        # if not self.training:
-        #     res_out = self.output_norm(res_out)
+        if not self.training:
+            res_out = self.output_norm(res_out)
         return res_llm, res_out, res_graph
 
     def min_compare(self, output):

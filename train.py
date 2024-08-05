@@ -20,7 +20,7 @@ from balance_sampler import BalancedSampler
 import pandas as pd
 import os
 import dgl
-from  torch.optim.lr_scheduler import ReduceLROnPlateau
+from  torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(device)
@@ -28,7 +28,7 @@ rf = open("runs_result.txt", "a+")
 with open("drb_vocabs", "rb") as f:
         vocab = pickle.load(f)
 
-def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=4):
+def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=8):
     # if inference=="block" or inference=="line":
     if os.path.isfile("llm_prompts_v2.json"):
         model = CombinedEncoder(
@@ -60,26 +60,6 @@ def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=
     # optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0.0001, amsgrad=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, amsgrad=True)
     return model, optimizer
-
-def pretrain_data_init(inference="graph"):
-    if inference=="graph":
-        train_set = DataraceDataset("dataracebench_trans_noarith_homo_augment_graphs_v14.bin",
-                                   "dataracebench_trans_noarith_homo_augment_labels_v14")
-    elif inference=="line":
-        train_set = DataraceDataset("dataracebench_homo_node_graphs.bin",
-                                   "dataracebench_homo_node_labels")
-    else:
-        train_set = DataraceDataset("dataracebench_homo_node_graphs.bin",
-                                   "dataracebench_homo_node_labels")
-
-    train_loader = DataLoader(
-                        train_set,
-                        batch_size=2,
-                        shuffle=True,
-                        num_workers=0,
-                        collate_fn=train_set.collate_fn
-                    )
-    return train_loader
         
 
 def data_init(inference="graph"):
@@ -93,7 +73,7 @@ def data_init(inference="graph"):
         prompts_file = "drb_prompts.json"
     # if os.path.isfile("three_bench_graph_names"):
     #     names_file = "three_bench_graph_names"
-    names_file=None
+    names_file="drb_graph_names"
     train_set = DataraceDataset("drb_graphs.bin",
                                 "drb_graph_labels",
                                 prompts_file,
@@ -131,36 +111,20 @@ def plot_result(loss, accuracy=None, precision=None, recall=None, num_epoch=60, 
     plt.savefig(title)
 
 def model_val(data_loader, model, run_iter, plot=False):
-    val_acc = []
-    val_precision = []
-    val_recall = []
-    val_losses = []
-    val_graphs, val_labels = data_loader.dataset.get_test_set()
-    val_labels_for_loss = val_labels.to(device=device)
     model.eval()
-    data_loader.dataset.train = False
-    predictions = []
-    val_loss = 0
-    for graph, val_label in zip(val_graphs, val_labels_for_loss):
+    losses = []
+    for graph, label, prompt, _ in data_loader:
         graph = graph.to(device=device)
+        label = torch.tensor(label, device=device, dtype=float)
         with torch.no_grad():
-            output, _ = model(graph)
-            val_loss += model.get_loss(graph, val_label.unsqueeze(-1))
-        output = output.detach().cpu()
-        predictions.append(output)
+            _, graph_pred, _ = model(graph, None, prompt[0])
+            # graph_pred = torch.squeeze(graph_pred, dim=1)
+            loss = model.loss_fn(graph_pred, label)
+            losses.append(loss.cpu().data.numpy())
+    avg_loss = np.mean(losses)
+    return avg_loss
 
-    val_losses.append(val_loss/len(val_labels_for_loss))
-    predictions = torch.concatenate(predictions)
-
-    accuracy, precision, recall = metrics(val_labels, predictions)
-    val_acc.append(accuracy)
-    val_precision.append(precision)
-    val_recall.append(recall)
-    train_loader.dataset.train = True
-    if plot:
-        plot_result(val_losses, val_acc, val_precision, val_recall, "Model Validation Results at run {}".format(run_iter))
-
-def step(graph, label, prompt, model, optimizer):
+def step(graph, label, prompt, model, optimizer, losses):
     if inference == "graph":
         _, graph_pred, _ = model(graph, None, prompt)
         # graph_pred = torch.squeeze(graph_pred, dim=1)
@@ -213,19 +177,21 @@ def step(graph, label, prompt, model, optimizer):
         global_label = torch.tensor([1], device=device, dtype=torch.float) if (block_labels==1).any() else torch.tensor([0], device=device, dtype=torch.float)
         # graph_pred, _ = model(graph)
         loss = model.combine_loss(graph_pred, global_label, block_preds, block_labels, cluster_loss)
+    losses.append(loss.cpu().data.numpy())
     optimizer.zero_grad()
     loss.backward()
     grad_clip = torch.nn.utils.clip_grad_norm_(
         model.parameters(), max_norm=100.0
     )
     optimizer.step()
-    return loss.cpu().data.numpy() 
 
-def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=False, validation=False, inference="graph", isSample=False):
+def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=True, validation=True, inference="graph", isSample=False):
     total_time = 0
     train_loss = []
+    # scheduler = StepLR(optimizer, step_size=40, gamma=0.01)
     scheduler = ReduceLROnPlateau(optimizer, 'min')
     start = time.time()
+    min_val_loss = np.inf
     for epoch in range(num_epoch):
         losses = []
         model.train()
@@ -239,8 +205,7 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
                     label = torch.tensor([label], device=device, dtype=float)
                     if graph.num_nodes() > 75000:
                         continue
-                    loss = step(graph, label, prompt, model, optimizer)
-                losses.append(loss)
+                    step(graph, label, prompt, model, optimizer, losses)
                 break
             else:
                 graph, label, prompt, _ = data_batch
@@ -248,13 +213,26 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
                         continue
                 graph = graph.to(device=device)
                 label = torch.tensor(label, device=device, dtype=float)
-                loss = step(graph, label, prompt[0], model, optimizer)
-                losses.append(loss)
+                step(graph, label, prompt[0], model, optimizer, losses)
+                # if i == break_iter:
+                #     break
         avg_loss = np.mean(losses)
-        scheduler.step(avg_loss)
         train_loss.append(avg_loss)
         if validation:
-            model_val(data_loader, model, run_iter, plot)
+            val_set = DataraceDataset("dracc_graphs.bin",
+                                "dracc_graph_labels",
+                                'dracc_prompts.json',
+                                'dracc_graph_names')
+            val_loader = DataLoader(
+                    val_set,
+                    shuffle=True,
+                    collate_fn=train_set.collate_fn
+                )
+            val_loss = model_val(val_loader, model, run_iter, plot)
+            if val_loss < min_val_loss:
+                min_val_loss = val_loss
+                torch.save(model.state_dict(), "models/best_val_model.pt")
+        scheduler.step(val_loss)
     
     total_time = time.time() - start
     print(
@@ -263,7 +241,8 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=F
     )
 
     if plot:
-        plot_result(train_loss, num_epoch=num_epoch, title="Train Loss at run {}".format(run_iter))
+        plot_result(train_loss, num_epoch=num_epoch, title="Train_Loss_at_run_{}".format(run_iter))
+    torch.save(model.state_dict(), "models/last_model.pt")
     return model
 
 def train_procedure(train_set, model, optimizer, num_epoch, run_iter, inference="graph", ensemble=True):
@@ -281,7 +260,7 @@ def train_procedure(train_set, model, optimizer, num_epoch, run_iter, inference=
                     shuffle=True,
                     collate_fn=train_set.collate_fn
                 )
-        model = train(data_loader, model, optimizer, num_epoch, 300, run_iter=run_iter, inference=inference, plot=True)
+        model = train(data_loader, model, optimizer, num_epoch, 100, run_iter=run_iter, inference=inference, plot=True)
     else:
         data_loader = DataLoader(
             train_set,
@@ -379,18 +358,15 @@ def metrics(truth_labels, predictions, names):
         for idx, val in enumerate(fp):
             if val:
                 print(names[idx])
-                print("\n")
         print("----------------------\n")
         print("false negative programs: \n")        
         for idx, val in enumerate(fn):
             if val:
                 print(names[idx])
-                print("\n")
     true_positives = torch.sum(confusion_vector == 1).item()
     false_positives = torch.sum(fp).item()
     true_negatives = torch.sum(torch.isnan(confusion_vector)).item()
     false_negatives = torch.sum(fn).item()
-    print("----------------------\n")
     print("true positives {}, false positive {}, true negative {}, false negatives {}".format(true_positives, false_positives, true_negatives, false_negatives))
 
     truth_labels = truth_labels.to(dtype=torch.int)
@@ -456,7 +432,7 @@ if __name__ == "__main__":
     print(k)
     hyperparams_tuning = args.hyperparams_tuning
     train_set, test_set = data_init(inference=inference)
-    # pretrain_loader = pretrain_data_init(inference=inference)
+
     if hyperparams_tuning:
         train_loader = DataLoader(
             train_set,
@@ -492,8 +468,20 @@ if __name__ == "__main__":
                     untrained_model, optimizer = model_init(n_mp=n_message_passes, n_steps=n_steps,
                                         hidden_nodes=hidden_nodes, inference=inference)
                     trained_model, a = train_procedure(train_set, untrained_model, optimizer, num_epoch=epoch, run_iter=fold_num+11, inference=inference, ensemble=emsemble)
-                    torch.save(trained_model.state_dict(), "models/drb_Combination_model.pt")
+                    best_val_model = CombinedEncoder(
+                        node_vocab_size=len(vocab) + 1,
+                        node_hidden_size=hidden_nodes,
+                        n_message_passes=n_message_passes,
+                        n_steps=n_steps,
+                        num_heads=8
+                    ).to(device=torch.device(device))
+                    best_val_model.load_state_dict(torch.load("models/best_val_model.pt"))
+                    print("---------------Fully Trained Model----------------\n")
                     accuracy, precision, recall = test(train_set, trained_model, cross_val=True, inference=inference)
+                    print("--------------------------------------------------\n")
+                    print("---------------Best Val Model----------------\n")
+                    accuracy, precision, recall = test(train_set, best_val_model, cross_val=True, inference=inference)
+                    print("--------------------------------------------------\n")
                     # NPB_test(trained_model)
                     all_precision.append(precision)
                     all_accuracy.append(accuracy)
