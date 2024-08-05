@@ -198,10 +198,10 @@ class GNNEncoder(nn.Module):
         else:
           raise NotImplementedError("")
 
-        if self.concat_intermediate:
-            self.embed_dim = (self.n_message_passes+1) * self.embed_dim 
-            if self.heterograph:
-                self.embed_dim *= num_node_type
+        # if self.concat_intermediate:
+        #     self.embed_dim = (self.n_message_passes+1) * self.embed_dim 
+        #     if self.heterograph:
+        #         self.embed_dim *= num_node_type
 
         # self.dim_reduce_layer = nn.Sequential(
         #         nn.Conv1d(in_channels=num_edge_type, out_channels=1, kernel_size=1),
@@ -257,99 +257,7 @@ class GNNEncoder(nn.Module):
         # self.loss_fn = self.f1_beta
 
     def forward(self, g, node_idx=None):
-        with g.local_scope():
-            res = self.encoding(g)
-            if self.inference == "graph":
-                if self.concat_intermediate:
-                    if self.heterograph:
-                        features = []
-                        for value in res.values():
-                            value_cat = torch.cat(value, axis=1)
-                            features.append(value_cat)
-                        # aggregation = torch.cat(features, axis=1)
-                        
-                        # if self.predictor == "MLP":
-                        #     aggregation = torch.cat(features, axis=1)
-                        # elif self.predictor == "Conv":
-                        #     aggregation = torch.stack(features).transpose(0,1)
-                        if self.predictor == "MLP":
-                            # aggregation = torch.stack(features).transpose(0,1)
-                            # aggregation = self.dim_reduce_layer(aggregation)
-                            # aggregation = torch.flatten(aggregation, 1)
-                            aggregation = torch.cat(features, axis=1)
-                        elif self.predictor == "Conv":
-                            aggregation = torch.stack(features).transpose(0,1)
-                    else:
-                        aggregation = torch.cat(res, axis=1)
-                else:
-                    if self.heterograph:
-                        if self.predictor == "MLP":
-                            g.ndata["feat"] = res
-                            aggregation=[]
-                            for key, value in g.ndata["feat"].items():
-                                node_aggregation = dgl.max_nodes(g,"feat", ntype=key)
-                                aggregation.append(node_aggregation)
-                            aggregation = torch.stack(aggregation).transpose(0,1)
-                        else:
-                            g.ndata["old_feat"] = g.ndata["feat"]
-                            batch_original = []
-                            batch = []
-                            g.ndata["feat"] = res
-                            for graph in dgl.unbatch(g):
-                                nodes_data = []
-                                nodes_data_original = []
-                                for ntype in graph.ndata["feat"]:
-                                    nodes_data_original.append(graph.ndata["feat"][ntype])
-                                    concat = torch.cat([graph.ndata["feat"][ntype], graph.ndata["old_feat"][ntype]], dim=0)
-                                    nodes_data.append(concat)
-                                nodes_data = torch.cat(nodes_data, dim=0).transpose(0, 1)
-                                nodes_data_original = torch.cat(nodes_data_original, dim=0).transpose(0, 1)
-                                batch.append(nodes_data)
-                                batch_original.append(nodes_data_original)
-                        # print(aggregation.flatten(start_dim=1).shape)
-                    else:
-                        g.ndata["feat"] = res
-                        aggregation = dgl.max_nodes(g, "feat")
-            elif self.inference == "node":
-                # adj_mat = g.adj_external().to(dtype=torch.double, device=device)
-                # res_sparse = res.to_sparse().requires_grad_()
-                # aggregation = torch.sparse.mm(adj_mat, res_sparse).to_dense()
-                aggregation = res
-                # lsnodes = g.filter_nodes(nodes_with_feature_one)
-                # aggregation = g.nodes[lsnodes].data['feat']
-                # aggregation = []
-                # for node_idx in g.nodes():
-                #     if g.nodes[node_idx].data['type'] == 1:
-                #         aggregation.append(g.nodes[node_idx].data['feat'])
-                # aggregation = torch.concatenate(aggregation, dim=0)
-
-        if self.attention:
-            res, atten_weight = self.attention_layer(query=aggregation, key=aggregation, value=aggregation)
-            res = self.attention_activation(res)
-            
-        if self.predictor == "MLP":
-            if self.heterograph and self.concat_intermediate==False:
-                res, _ = torch.max(res, dim=1)
-            if self.inference == "node":
-                g.ndata["feat"] = res
-                lsnodes = g.filter_nodes(nodes_with_feature_one)
-                res = g.nodes[lsnodes].data['feat']
-        else:
-            output = []
-            for concat_data, encoded_data in zip(batch, batch_original):
-                concat = self.reward_predictor_conv(concat_data).sum(dim=1)
-                encode = self.reward_predictor_conv(encoded_data).sum(dim=1)
-                res = self.fc_1(concat) * self.fc_2(encode)
-                res = self.drop(res)
-                output.append(res)
-            res = torch.stack(output)
-            aggregation = 0
-        # res = self.output_norm(res)
-
-        if not self.train:
-            res = self.output_norm(res)
-
-        return res, res_blocks
+        pass
 
     def get_loss(self, g, labels, debug=False):
         """
@@ -408,7 +316,7 @@ class GNNEncoder(nn.Module):
                 for node_type in g.ndata["feat"].keys():
                     intermediate[node_type] = [dgl.max_nodes(g, "feat", ntype=node_type)]
             else:
-                intermediate = [dgl.max_nodes(g, "feat")]
+                intermediate = res
 
         for i, layer in enumerate(self.ggcnn):
             if self.gnn_type=="GatedGraphConv" or self.gnn_type=="RelGraphConv":
@@ -438,13 +346,12 @@ class GNNEncoder(nn.Module):
                     else:
                         res = torch.mean(res, dim=1)
             if self.concat_intermediate:
-                g.ndata["feat"] = res
-                if self.heterograph:
-                    for key in intermediate.keys():
-                        intermediate[key].append(dgl.max_nodes(g, "feat", ntype=key))
-                else:
-                    intermediate.append(dgl.max_nodes(g, "feat"))
-        if self.concat_intermediate:
-            return intermediate
-        else:
-            return res
+                # g.ndata["feat"] = res
+                # if self.heterograph:
+                #     for key in intermediate.keys():
+                #         intermediate[key].append(dgl.max_nodes(g, "feat", ntype=key))
+                # else:
+                #     intermediate.append(dgl.max_nodes(g, "feat"))
+                res += intermediate
+                intermediate = res
+        return res

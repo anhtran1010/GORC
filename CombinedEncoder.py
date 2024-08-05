@@ -61,10 +61,8 @@ class CombinedEncoder(GNNEncoder):
         self.tokenizer = Tokenizer.from_file("drb_tokenizer.json")
         self.tokenizer.enable_truncation(max_length=4096)
         self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=2)
-        if self.concat_intermediate:
-            combined_dim = self.embed_dim + 64
-        else:
-            combined_dim = self.embed_dim*2
+            
+        combined_dim = self.embed_dim*2
         self.graph_predictor = nn.Sequential(
                 nn.LeakyReLU(),
                 nn.Dropout(p=0.3),
@@ -85,10 +83,7 @@ class CombinedEncoder(GNNEncoder):
             # adj = g.adj().to_dense()
             # _, res, adj, sp, o, c = self.pooling(res, adj)
             # res = res.squeeze(0)
-            if self.concat_intermediate:
-                aggregation = torch.cat(res, axis=1)
-            else:
-                g.ndata["feat"] = res
+            g.ndata["feat"] = res
             llm_inputs = self.tokenizer.encode(prompts["prompt"]).ids
             llm_inputs = torch.tensor(llm_inputs, device=device, dtype=int)
             llm_encode = self.llm.encode(llm_inputs)
@@ -112,8 +107,7 @@ class CombinedEncoder(GNNEncoder):
                 # total_loss += sp + o + c
             # _, aggregation, graph_adj, spg, og, cg = self.pooling(res, adj)
             # aggregation = aggregation.squeeze(0)
-            if not self.concat_intermediate:
-                aggregation = dgl.max_nodes(g, "feat")
+            aggregation = dgl.max_nodes(g, "feat")
         # if self.attention:
         #     res, atten_weight = self.attention_layer(query=aggregation, key=aggregation, value=aggregation)
         #     res = self.attention_activation(res)
