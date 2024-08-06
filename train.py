@@ -19,12 +19,12 @@ from balance_sampler import BalancedSampler
 import pandas as pd
 import os
 import dgl
-from  torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
+from  torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(device)
 rf = open("runs_result.txt", "a+")
-with open("drb_vocabs", "rb") as f:
+with open("three_bench_vocabs", "rb") as f:
         vocab = pickle.load(f)
 
 def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=8):
@@ -48,7 +48,7 @@ def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=
     #         inference=inference
     #     ).to(device=torch.device(device))
     # optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0.0001, amsgrad=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, amsgrad=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, amsgrad=True)
     return model, optimizer
         
 
@@ -59,13 +59,13 @@ def data_init(inference="graph"):
     # train_set = DataraceDataset("homograph_graphs.bin",
     #                             "homograph_labels",
     #                             prompts_file)
-    if os.path.isfile("drb_prompts.json"):
-        prompts_file = "drb_prompts.json"
+    if os.path.isfile("three_bench_prompts.json"):
+        prompts_file = "three_bench_prompts.json"
     # if os.path.isfile("three_bench_graph_names"):
     #     names_file = "three_bench_graph_names"
-    names_file="drb_graph_names"
-    train_set = DataraceDataset("drb_graphs.bin",
-                                "drb_graph_labels",
+    names_file="three_bench_graph_names"
+    train_set = DataraceDataset("three_bench_graphs.bin",
+                                "three_bench_graph_labels",
                                 prompts_file,
                                 names_file)
     test_set = None
@@ -178,10 +178,12 @@ def step(graph, label, prompt, model, optimizer, losses):
 def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=True, validation=True, inference="graph", isSample=False):
     total_time = 0
     train_loss = []
-    # scheduler = StepLR(optimizer, step_size=40, gamma=0.01)
-    scheduler = ReduceLROnPlateau(optimizer, 'min')
+    scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+    # scheduler = ReduceLROnPlateau(optimizer, 'min')
+    #scheduler = CosineAnnealingLR(optimizer, 230)
     start = time.time()
     min_val_loss = np.inf
+    min_val_iter = 0
     for epoch in range(num_epoch):
         losses = []
         model.train()
@@ -196,6 +198,7 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=T
                     if graph.num_nodes() > 75000:
                         continue
                     step(graph, label, prompt, model, optimizer, losses)
+                    #scheduler.step()
                 break
             else:
                 graph, label, prompt, _ = data_batch
@@ -204,6 +207,7 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=T
                 graph = graph.to(device=device)
                 label = torch.tensor(label, device=device, dtype=float)
                 step(graph, label, prompt[0], model, optimizer, losses)
+                #scheduler.step(val_loss)
                 # if i == break_iter:
                 #     break
         avg_loss = np.mean(losses)
@@ -220,10 +224,11 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=T
                 )
             val_loss = model_val(val_loader, model, run_iter, plot)
             if val_loss < min_val_loss:
+                min_val_iter = epoch
                 min_val_loss = val_loss
                 torch.save(model.state_dict(), "models/best_val_model.pt")
-        scheduler.step(val_loss)
-    
+        scheduler.step()
+        #scheduler = CosineAnnealingLR(optimizer, 230)
     total_time = time.time() - start
     print(
         f"  Whole {'training' if train else 'validation'} took: "
@@ -233,17 +238,18 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=T
     if plot:
         plot_result(train_loss, num_epoch=num_epoch, title="Train_Loss_at_run_{}".format(run_iter))
     torch.save(model.state_dict(), "models/last_model.pt")
+    print("min val epoch: ", min_val_iter)
     return model
 
 def train_procedure(train_set, model, optimizer, num_epoch, run_iter, inference="graph", ensemble=True):
-    # sampler = BalancedSampler(train_set, batch_size=230)
+    sampler = BalancedSampler(train_set, batch_size=230)
     # data_loader = DataLoader(
     #         train_set,
     #         batch_size=230,
     #         sampler=sampler,
     #         collate_fn=train_set.collate_fn
     #     )
-    sampler = None
+    # sampler = None
     if sampler == None:  
         data_loader = DataLoader(
                     train_set,
@@ -258,7 +264,7 @@ def train_procedure(train_set, model, optimizer, num_epoch, run_iter, inference=
             sampler=sampler,
             collate_fn=train_set.collate_fn
         )
-        model = train(data_loader, model, optimizer, num_epoch, 300, run_iter=run_iter, inference=inference, plot=True, isSample=True)
+        model = train(data_loader, model, optimizer, num_epoch, 300, run_iter=run_iter, validation=False, inference=inference, plot=True, isSample=True)
     return model, None
 
 def test(train_set, model, cross_val=False, ensemble=False, model_importance=None, inference="graph"):
@@ -435,7 +441,7 @@ if __name__ == "__main__":
         rf.close()
         exit()
 
-    for epoch in [60]:
+    for epoch in [70]:
         all_precision = []
         all_accuracy = []
         all_recall = []
@@ -465,13 +471,13 @@ if __name__ == "__main__":
                         n_steps=n_steps,
                         num_heads=8
                     ).to(device=torch.device(device))
-                    best_val_model.load_state_dict(torch.load("models/best_val_model.pt"))
+                    # best_val_model.load_state_dict(torch.load("models/best_val_model.pt"))
                     print("---------------Fully Trained Model----------------\n")
                     accuracy, precision, recall = test(train_set, trained_model, cross_val=True, inference=inference)
                     print("--------------------------------------------------\n")
-                    print("---------------Best Val Model----------------\n")
-                    test(train_set, best_val_model, cross_val=True, inference=inference)
-                    print("--------------------------------------------------\n")
+                    # print("---------------Best Val Model----------------\n")
+                    # test(train_set, best_val_model, cross_val=True, inference=inference)
+                    # print("--------------------------------------------------\n")
                     # NPB_test(trained_model)
                     all_precision.append(precision)
                     all_accuracy.append(accuracy)

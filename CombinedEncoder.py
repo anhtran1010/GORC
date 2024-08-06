@@ -58,9 +58,9 @@ class CombinedEncoder(GNNEncoder):
             num_heads, 
             concat_intermediate)
 
-        self.tokenizer = Tokenizer.from_file("drb_tokenizer.json")
+        self.tokenizer = Tokenizer.from_file("three_bench_tokenizer.json")
         self.tokenizer.enable_truncation(max_length=4096)
-        self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=2)
+        self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=6)
             
         combined_dim = self.embed_dim*2
         self.graph_predictor = nn.Sequential(

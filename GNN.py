@@ -191,6 +191,7 @@ class GNNEncoder(nn.Module):
                     weight=True, 
                     bias=True,
                     # activation=nn.LeakyReLU(),
+                    activation=nn.ReLU(),
                     allow_zero_in_degree=True
                 )
                 self.ggcnn.append(conv_layer)
@@ -319,6 +320,13 @@ class GNNEncoder(nn.Module):
                 intermediate = res
 
         for i, layer in enumerate(self.ggcnn):
+            if self.concat_intermediate:
+                if self.heterograph:
+                    intermediate = {}
+                    for node_type in g.ndata["feat"].keys():
+                        intermediate[node_type] = [dgl.max_nodes(g, "feat", ntype=node_type)]
+                else:
+                    intermediate = res
             if self.gnn_type=="GatedGraphConv" or self.gnn_type=="RelGraphConv":
                 if self.heterograph:
                     for node_type in g.ndata["feat"].keys():
@@ -345,13 +353,4 @@ class GNNEncoder(nn.Module):
                             res[ntype] = torch.mean(res[ntype],dim=1)
                     else:
                         res = torch.mean(res, dim=1)
-            if self.concat_intermediate:
-                # g.ndata["feat"] = res
-                # if self.heterograph:
-                #     for key in intermediate.keys():
-                #         intermediate[key].append(dgl.max_nodes(g, "feat", ntype=key))
-                # else:
-                #     intermediate.append(dgl.max_nodes(g, "feat"))
-                res += intermediate
-                intermediate = res
         return res
