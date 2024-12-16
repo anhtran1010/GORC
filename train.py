@@ -1,5 +1,6 @@
 import argparse
 import collections
+import copy
 import time
 
 import numpy as np
@@ -20,11 +21,12 @@ import pandas as pd
 import os
 import dgl
 from  torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR
+from gxai.my_subgraphx import visualize
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(device)
 rf = open("runs_result.txt", "a+")
-with open("three_bench_vocabs", "rb") as f:
+with open("OMP_Critical_vocabs", "rb") as f:
         vocab = pickle.load(f)
 
 def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=8):
@@ -48,31 +50,43 @@ def model_init(n_mp=6, n_steps=2, hidden_nodes=64, inference="graph", num_heads=
     #         inference=inference
     #     ).to(device=torch.device(device))
     # optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0.0001, amsgrad=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, amsgrad=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3.5e-5, weight_decay=0.001, amsgrad=True)
     return model, optimizer
         
-
-def data_init(inference="graph"):
-    prompts_file = None
-    # if os.path.isfile("llm_prompts_v2.json"):
-    #     prompts_file = "llm_prompts_v2.json"
-    # train_set = DataraceDataset("homograph_graphs.bin",
-    #                             "homograph_labels",
-    #                             prompts_file)
-    if os.path.isfile("three_bench_prompts.json"):
-        prompts_file = "three_bench_prompts.json"
-    # if os.path.isfile("three_bench_graph_names"):
-    #     names_file = "three_bench_graph_names"
-    names_file="three_bench_graph_names"
-    train_set = DataraceDataset("three_bench_graphs.bin",
-                                "three_bench_graph_labels",
-                                prompts_file,
-                                names_file)
+def data_init(inference="graph", has_test=True):
+    if inference=="graph":
+        prompts_file = None
+        # if os.path.isfile("llm_prompts_v2.json"):
+        #     prompts_file = "llm_prompts_v2.json"
+        # train_set = DataraceDataset("homograph_graphs.bin",
+        #                             "homograph_labels",
+        #                             prompts_file)
+        # prompts_file = "drb_prompts.json"
+        # if os.path.isfile("three_bench_graph_names"):
+        #     names_file = "three_bench_graph_names"
+        # names_file="OMP_Critical_graph_names"
+        # dot_file = "drb_dot"
+        dot_file = None
+        names_file = None
+        train_set = DataraceDataset("train_OMP_Critical_graphs.bin",
+                                    "train_OMP_Critical_labels",
+                                    prompts_file,
+                                    names_file,
+                                    graph_dot_file=dot_file)
+    elif inference=="line":
+        prompts_file = None
     test_set = None
+    if has_test:
+        test_set = DataraceDataset("test_OMP_Critical_graphs.bin",
+                                    "test_OMP_Critical_labels",
+                                    None,
+                                    None,
+                                    None)
     # train_set.split()
     return train_set, test_set
 
 def plot_result(loss, accuracy=None, precision=None, recall=None, num_epoch=60, title="Result"):
+
     plt.figure(figsize=(12, 8))
     if accuracy:
         plt.subplot(2, 2, 1)
@@ -103,11 +117,11 @@ def plot_result(loss, accuracy=None, precision=None, recall=None, num_epoch=60, 
 def model_val(data_loader, model, run_iter, plot=False):
     model.eval()
     losses = []
-    for graph, label, prompt, _ in data_loader:
+    for graph, label, prompt, _ , _ in data_loader:
         graph = graph.to(device=device)
         label = torch.tensor(label, device=device, dtype=float)
         with torch.no_grad():
-            _, graph_pred, _ = model(graph, None, prompt[0])
+            _, graph_pred, _ = model(graph, None, prompt)
             # graph_pred = torch.squeeze(graph_pred, dim=1)
             loss = model.loss_fn(graph_pred, label)
             losses.append(loss.cpu().data.numpy())
@@ -178,8 +192,8 @@ def step(graph, label, prompt, model, optimizer, losses):
 def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=True, validation=True, inference="graph", isSample=False):
     total_time = 0
     train_loss = []
-    scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
-    # scheduler = ReduceLROnPlateau(optimizer, 'min')
+    scheduler = StepLR(optimizer, step_size=50, gamma=0.1)
+    # scheduler = ReduceLROnPlateau(optimizer, 'min', patience=10)
     #scheduler = CosineAnnealingLR(optimizer, 230)
     start = time.time()
     min_val_loss = np.inf
@@ -191,7 +205,7 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=T
             if data_batch is None:
                 continue
             if isSample:
-                graphs, labels, prompts, _ = data_batch
+                graphs, labels, prompts, _ , _= data_batch
                 for graph, label, prompt in zip(dgl.unbatch(graphs), labels, prompts):
                     graph = graph.to(device=device)
                     label = torch.tensor([label], device=device, dtype=float)
@@ -201,12 +215,12 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=T
                     #scheduler.step()
                 break
             else:
-                graph, label, prompt, _ = data_batch
+                graph, label, prompt, _ , _= data_batch
                 if graph.num_nodes() > 75000:
                         continue
                 graph = graph.to(device=device)
                 label = torch.tensor(label, device=device, dtype=float)
-                step(graph, label, prompt[0], model, optimizer, losses)
+                step(graph, label, prompt, model, optimizer, losses)
                 #scheduler.step(val_loss)
                 # if i == break_iter:
                 #     break
@@ -242,47 +256,48 @@ def train(data_loader, model, optimizer, num_epoch, break_iter, run_iter, plot=T
     return model
 
 def train_procedure(train_set, model, optimizer, num_epoch, run_iter, inference="graph", ensemble=True):
-    sampler = BalancedSampler(train_set, batch_size=230)
+    # sampler = BalancedSampler(train_set, batch_size=175)
     # data_loader = DataLoader(
     #         train_set,
     #         batch_size=230,
     #         sampler=sampler,
     #         collate_fn=train_set.collate_fn
     #     )
-    # sampler = None
+    sampler = None
     if sampler == None:  
         data_loader = DataLoader(
                     train_set,
                     shuffle=True,
                     collate_fn=train_set.collate_fn
                 )
+        print("num training instances: ", len(data_loader))
         model = train(data_loader, model, optimizer, num_epoch, 100, run_iter=run_iter, inference=inference, plot=True)
     else:
         data_loader = DataLoader(
             train_set,
-            batch_size=230,
+            batch_size=175,
             sampler=sampler,
             collate_fn=train_set.collate_fn
         )
-        model = train(data_loader, model, optimizer, num_epoch, 300, run_iter=run_iter, validation=False, inference=inference, plot=True, isSample=True)
+        model = train(data_loader, model, optimizer, num_epoch, 300, run_iter=run_iter, validation=True, inference=inference, plot=True, isSample=True)
     return model, None
 
-def test(train_set, model, cross_val=False, ensemble=False, model_importance=None, inference="graph"):
+def test(test_set, model, cross_val=False, ensemble=False, model_importance=None, inference="graph"):
     predictions = []
+    labels = []
+    file_names = []
     total_time = 0
     data_loader = DataLoader(
-            train_set,
+            test_set,
             batch_size=1,
             shuffle=False,
             num_workers=0,
-            collate_fn=train_set.collate_fn
+            collate_fn=test_set.collate_fn
         )
     model.eval()
     if cross_val:
-        val_graphs, truth_labels, prompts, names = data_loader.dataset.get_test_set(inference=inference)
-        labels = []
-        file_names = []
-        for graph, label, prompt, name in zip(val_graphs, truth_labels, prompts, names):
+        val_graphs, truth_labels, prompts, names, dots = data_loader.dataset.get_test_set(inference=inference)
+        for graph, label, prompt, name, graph_dot in zip(val_graphs, truth_labels, prompts, names, dots):
             if graph.num_nodes() > 75000:
                 print("skip")
                 continue
@@ -292,7 +307,14 @@ def test(train_set, model, cross_val=False, ensemble=False, model_importance=Non
             if inference == "graph":
                 labels.append(label)
                 with torch.no_grad():
+                    # viz_g = copy.deepcopy(graph)
+                    # model.featurize_nodes(viz_g)
+                    # visualize(viz_g, model, prompt, graph_dot)
                     _, output, _ = model(graph, None, prompt)
+                    # print(name)
+                    # print(label)
+                    # print(output)
+                    # exit()
                 output = output.detach().cpu()
             else:
                 block_sets = []
@@ -316,23 +338,25 @@ def test(train_set, model, cross_val=False, ensemble=False, model_importance=Non
             predictions.append(output)
             file_names.append(name)
     else:
-        truth_labels = []
-        for graph, label in data_loader:
-            truth_labels.append(torch.tensor(label))
+        for graph, label, _, _, _ in data_loader:
+            labels.append(label)
             graph = graph.to(device=device)
             start_time = time.time()
             with torch.no_grad():
-                output, _ = model(graph)
+                _, output, _ = model(graph, None, None)
             end_pred_time = time.time()-start_time
             total_time+=end_pred_time
             output = output.detach().cpu()
             predictions.append(output)
-        truth_labels = torch.concatenate(truth_labels)
+        # truth_labels = torch.concatenate(truth_labels)
     # print("total inference time: ",total_time)
 
     predictions = torch.concatenate(predictions)
     truth_labels =  torch.tensor(labels, dtype=torch.float)
-    accuracy, precision, recall = metrics(truth_labels, predictions, names=None)
+    if not cross_val:
+        truth_labels = torch.flatten(truth_labels) 
+    assert truth_labels.shape == predictions.shape, "labels and outputs shape mismatch"
+    accuracy, precision, recall = metrics(truth_labels, predictions, names=file_names)
     return accuracy, precision, recall
 
 def metrics(truth_labels, predictions, names):
@@ -404,7 +428,7 @@ if __name__ == "__main__":
         description='Simple Driver program that trains a GCN to predict the data race condition')
     parser.add_argument('-np', '--num-processes', help='Number of processes to use for training', type=int, default=0)
     parser.add_argument('-s', '--steps', help='Number of steps for passing message', type=int, default=3)
-    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=3)
+    parser.add_argument('-m', '--messages', help='Number of messages being passed', type=int, default=4)
     parser.add_argument('-b', '--batch-size', help='Batch size', type=int, default=4)
     parser.add_argument('-e', '--epoch', help='Epochs of training loop', type=int, default=5)
     parser.add_argument('-nr', '--runs', help='Number of runs', type=int, default=1)
@@ -464,16 +488,17 @@ if __name__ == "__main__":
                     untrained_model, optimizer = model_init(n_mp=n_message_passes, n_steps=n_steps,
                                         hidden_nodes=hidden_nodes, inference=inference)
                     trained_model, a = train_procedure(train_set, untrained_model, optimizer, num_epoch=epoch, run_iter=fold_num+11, inference=inference, ensemble=emsemble)
-                    best_val_model = CombinedEncoder(
-                        node_vocab_size=len(vocab) + 1,
-                        node_hidden_size=hidden_nodes,
-                        n_message_passes=n_message_passes,
-                        n_steps=n_steps,
-                        num_heads=8
-                    ).to(device=torch.device(device))
+                    # best_val_model = CombinedEncoder(
+                    #     node_vocab_size=len(vocab) + 1,
+                    #     node_hidden_size=hidden_nodes,
+                    #     n_message_passes=n_message_passes,
+                    #     n_steps=n_steps,
+                    #     num_heads=8
+                    # ).to(device=torch.device(device))
                     # best_val_model.load_state_dict(torch.load("models/best_val_model.pt"))
                     print("---------------Fully Trained Model----------------\n")
-                    accuracy, precision, recall = test(train_set, trained_model, cross_val=True, inference=inference)
+                    if test_set:
+                        accuracy, precision, recall = test(test_set, trained_model, cross_val=True, inference=inference)
                     print("--------------------------------------------------\n")
                     # print("---------------Best Val Model----------------\n")
                     # test(train_set, best_val_model, cross_val=True, inference=inference)
@@ -484,27 +509,13 @@ if __name__ == "__main__":
                     all_recall.append(recall)
             else:
                 untrained_model, optimizer = model_init(n_mp=n_message_passes, n_steps=n_steps,
-                                                                hidden_nodes=hidden_nodes, inference=inference, num_heads=10)
-                train_loader = DataLoader(
-                    train_set,
-                    batch_size=2,
-                    shuffle=True,
-                    num_workers=0,
-                    collate_fn=train_set.collate_fn
-                )
-                test_loader = DataLoader(
-                    test_set,
-                    batch_size=1,
-                    shuffle=False,
-                    num_workers=0,
-                    collate_fn=test_set.collate_fn
-                )
-                trained_model = train(train_loader, untrained_model, optimizer, epoch, i, inference)
-                accuracy, precision, recall = test(test_loader, trained_model, cross_val=False)
+                                                                hidden_nodes=hidden_nodes, inference=inference, num_heads=8)
+                trained_model, a = train_procedure(train_set, untrained_model, optimizer, num_epoch=epoch, run_iter=i, inference=inference, ensemble=emsemble)
+                accuracy, precision, recall = test(test_set, trained_model, cross_val=False)
                 all_precision.append(precision)
                 all_accuracy.append(accuracy)
                 all_recall.append(recall)
-                del trained_model, untrained_model
+                # del trained_model, untrained_model
         
         mean_precision = np.mean(all_precision)
         mean_accuracy = np.mean(all_accuracy)

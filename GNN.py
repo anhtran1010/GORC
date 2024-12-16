@@ -9,6 +9,7 @@ from loss import AUCPRHingeLoss
 import math
 import copy
 import numpy as np
+from dgl.nn import GlobalAttentionPooling
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 class GNNEncoder(nn.Module):
@@ -163,27 +164,6 @@ class GNNEncoder(nn.Module):
             # self.ggcnn.append(gat)
             self.ggcnn.append(gat)
             for i in range(self.n_message_passes-1):
-                # conv_layer = dgl.nn.pytorch.conv.SAGEConv(
-                #         in_feats=self.node_hidden_size,
-                #         out_feats=self.node_hidden_size,
-                #         aggregator_type="lstm",
-                #         activation=nn.ReLU()
-                #     )
-                # conv_layer = dgl.nn.pytorch.conv.GatedGraphConv(
-                #   in_feats=self.node_hidden_size,
-                #   out_feats=self.node_hidden_size,
-                #   n_steps=self.n_steps,
-                #   n_etypes=self.n_etypes,
-                # )
-                # conv_layer = dgl.nn.pytorch.conv.RelGraphConv(
-                #     in_feat=self.node_hidden_size,
-                #     out_feat=self.node_hidden_size,
-                #     num_rels=self.n_etypes,
-                #     regularizer="basis",
-                #     num_bases=self.n_etypes,
-                #     activation=nn.ReLU(),
-                #     dropout=0.2
-                # )
                 conv_layer = dgl.nn.pytorch.conv.GraphConv(
                     in_feats=self.node_hidden_size,
                     out_feats=self.node_hidden_size,
@@ -252,7 +232,8 @@ class GNNEncoder(nn.Module):
         else:
             raise NotImplementedError("")
         # pos_weight = nn.Parameter(torch.tensor(1.5), requires_grad=True).to(device=device)
-
+        self.gate_nn = nn.Linear(self.embed_dim, 1)
+        self.gap = GlobalAttentionPooling(self.gate_nn)
         self.loss_fn = nn.BCEWithLogitsLoss()
         #self.loss_fn = AUCPRHingeLoss()
         # self.loss_fn = self.f1_beta
@@ -309,7 +290,8 @@ class GNNEncoder(nn.Module):
         return 1 - fbeta.mean()
 
     def encoding(self, g):
-        self.featurize_nodes(g)
+        if "feat" not in g.ndata:
+            self.featurize_nodes(g)
         res = g.ndata["feat"]
         if self.concat_intermediate:
             if self.heterograph:
@@ -320,13 +302,6 @@ class GNNEncoder(nn.Module):
                 intermediate = res
 
         for i, layer in enumerate(self.ggcnn):
-            if self.concat_intermediate:
-                if self.heterograph:
-                    intermediate = {}
-                    for node_type in g.ndata["feat"].keys():
-                        intermediate[node_type] = [dgl.max_nodes(g, "feat", ntype=node_type)]
-                else:
-                    intermediate = res
             if self.gnn_type=="GatedGraphConv" or self.gnn_type=="RelGraphConv":
                 if self.heterograph:
                     for node_type in g.ndata["feat"].keys():
@@ -341,6 +316,7 @@ class GNNEncoder(nn.Module):
                         for ntype in res:
                             res[ntype] = torch.mean(res[ntype],dim=1)
                     else:
+                        # res = self.gap(g, res)
                         res = torch.mean(res, dim=1)
                 else:
                     # res = layer(g, res, g.edata["flow"])
@@ -353,4 +329,8 @@ class GNNEncoder(nn.Module):
                             res[ntype] = torch.mean(res[ntype],dim=1)
                     else:
                         res = torch.mean(res, dim=1)
+                if self.concat_intermediate:
+                # if i == self.n_message_passes-1:
+                    res = res + intermediate
+                    intermediate = res
         return res

@@ -18,6 +18,7 @@ from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 import os 
 import torch.nn.functional as F
+from dgl.nn import WeightAndSum
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -38,7 +39,7 @@ class CombinedEncoder(GNNEncoder):
             predictor="MLP",
             feat_drop=0.0,
             num_heads=8,
-            concat_intermediate=True,
+            concat_intermediate=False,
             attention=False
     ):
         super(CombinedEncoder, self).__init__(
@@ -58,16 +59,16 @@ class CombinedEncoder(GNNEncoder):
             num_heads, 
             concat_intermediate)
 
-        self.tokenizer = Tokenizer.from_file("three_bench_tokenizer.json")
+        self.tokenizer = Tokenizer.from_file("drb_tokenizer.json")
         self.tokenizer.enable_truncation(max_length=4096)
-        self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=6)
+        self.llm = Transformer(embed_dim=64, src_vocab_size=self.tokenizer.get_vocab_size(), target_vocab_size=self.tokenizer.get_vocab_size(), seq_length=4096, num_layers=4)
             
         combined_dim = self.embed_dim*2
         self.graph_predictor = nn.Sequential(
                 nn.LeakyReLU(),
                 nn.Dropout(p=0.3),
                 nn.Linear(combined_dim, self.reward_dim))
-
+        
         self.llm_trans = nn.Sequential(
                 nn.LayerNorm(512),
                 nn.Dropout(p=0.3),
@@ -78,36 +79,40 @@ class CombinedEncoder(GNNEncoder):
                 nn.Linear(512, self.reward_dim))
         
     def forward(self, g, node_idx, prompts, targets=None):
+        res_out = None
+        res_llm = None
         with g.local_scope():
             res = self.encoding(g)
             # adj = g.adj().to_dense()
             # _, res, adj, sp, o, c = self.pooling(res, adj)
             # res = res.squeeze(0)
             g.ndata["feat"] = res
-            llm_inputs = self.tokenizer.encode(prompts["prompt"]).ids
-            llm_inputs = torch.tensor(llm_inputs, device=device, dtype=int)
-            llm_encode = self.llm.encode(llm_inputs)
-            total_loss = 0
-            if targets:
-                block_aggregation = torch.zeros(len(node_idx), res.shape[-1]*2, device=device)
-                llm_aggregation = torch.zeros(len(node_idx), 512, device=device)
-                for i, line in enumerate(zip(node_idx, targets)):
-                    idx, trg = line[0], line[1]
-                    sg = g.subgraph(idx)
-                    # feat = sg.ndata["feat"]
-                    # mask = torch.zeros(g.num_nodes(), device=device).scatter_(0, idx, 1)
-                    # _, block, new_adj, sp, o, c = self.pooling(res, adj, mask)
-                    block = dgl.max_nodes(sg, "feat")
-                    trg_input = self.tokenizer.encode(trg).ids
-                    trg_input = torch.tensor(trg_input, device=device)
-                    llm_pred = self.llm(llm_encode, trg_input).mean(dim=0)
-                    llm_aggregation[i] = self.llm.decode_out(llm_encode, trg_input).mean(dim=0)
-                    block = torch.flatten(block)
-                    block_aggregation[i] = torch.cat([block,llm_pred], dim=0)
+            if prompts:
+                llm_inputs = self.tokenizer.encode(prompts["prompt"]).ids
+                llm_inputs = torch.tensor(llm_inputs, device=device, dtype=int)
+                llm_encode = self.llm.encode(llm_inputs)
+                total_loss = 0
+                if targets:
+                    block_aggregation = torch.zeros(len(node_idx), res.shape[-1]*2, device=device)
+                    llm_aggregation = torch.zeros(len(node_idx), 512, device=device)
+                    for i, line in enumerate(zip(node_idx, targets)):
+                        idx, trg = line[0], line[1]
+                        sg = g.subgraph(idx)
+                        # feat = sg.ndata["feat"]
+                        # mask = torch.zeros(g.num_nodes(), device=device).scatter_(0, idx, 1)
+                        # _, block, new_adj, sp, o, c = self.pooling(res, adj, mask)
+                        block = dgl.max_nodes(sg, "feat")
+                        trg_input = self.tokenizer.encode(trg).ids
+                        trg_input = torch.tensor(trg_input, device=device)
+                        llm_pred = self.llm(llm_encode, trg_input).mean(dim=0)
+                        llm_aggregation[i] = self.llm.decode_out(llm_encode, trg_input).mean(dim=0)
+                        block = torch.flatten(block)
+                        block_aggregation[i] = torch.cat([block,llm_pred], dim=0)
                 # total_loss += sp + o + c
             # _, aggregation, graph_adj, spg, og, cg = self.pooling(res, adj)
             # aggregation = aggregation.squeeze(0)
             aggregation = dgl.max_nodes(g, "feat")
+            # aggregation = self.pooling(g, res)
         # if self.attention:
         #     res, atten_weight = self.attention_layer(query=aggregation, key=aggregation, value=aggregation)
         #     res = self.attention_activation(res)
@@ -124,25 +129,28 @@ class CombinedEncoder(GNNEncoder):
                 llm_mask = self.min_compare(res_llm)
                 res_out = torch.where(llm_mask<graph_mask, res_llm, res_graph)
             else:
+                if prompts:
                 # llm_encode, _ = torch.max(llm_encode, dim=0)
-                # llm_encode = torch.mean(llm_encode, dim=0)
-                llm_encoding = self.llm_trans(llm_encode).mean(dim=0)
-                # llm_encoding, _ = llm_encoding.max(dim=0)
-                if llm_encoding.shape[0] == 0:
-                    print(llm_encoding)
-                    print(prompts)
-                # res_llm = nn.functional.sigmoid(self.llm_predictor(llm_encode).sum(dim=0))
-                # if torch.isnan(res_llm):
-                #     print(res_llm)
+                    llm_encode = torch.mean(llm_encode, dim=0)
+                    llm_encoding = self.llm_trans(llm_encode)
+                    # llm_encoding, _ = llm_encoding.max(dim=0)
+                    if llm_encoding.shape[0] == 0:
+                        print(llm_encoding)
+                        print(prompts)
+                    # res_llm = nn.functional.sigmoid(self.llm_predictor(llm_encode).sum(dim=0))
+                    # if torch.isnan(res_llm):
+                    #     print(res_llm)
 
-                graph_aggregation = torch.cat([aggregation, llm_encoding.unsqueeze(0)], dim=1)
-                
-                # graph_aggregation = F.leaky_relu(aggregation * llm_encoding)
-                if not torch.isfinite(graph_aggregation).any():
-                    print(graph_aggregation)
-                res_out = self.graph_predictor(graph_aggregation).squeeze(0)
-                res_graph = nn.functional.sigmoid(self.reward_predictor_block_two(aggregation)).squeeze(0)
-                res_llm = self.llm_predictor(llm_encode)
+                    graph_aggregation = torch.cat([aggregation, llm_encoding.unsqueeze(0)], dim=1)
+                    
+                    # graph_aggregation = F.leaky_relu(aggregation * llm_encoding)
+                    if not torch.isfinite(graph_aggregation).any():
+                        print(graph_aggregation)
+                    res_out = self.graph_predictor(graph_aggregation).squeeze(0)
+                    res_llm = self.llm_predictor(llm_encode)
+                res_graph = self.reward_predictor_block_two(aggregation).squeeze(0)
+                # llm_encode = torch.mean(llm_encode, dim=0)
+
                 # graph_mask = self.min_compare(res_graph)
                 # llm_mask = self.min_compare(res_llm)
                 # res_out = torch.where(llm_mask<graph_mask, res_llm, res_graph)
@@ -159,8 +167,11 @@ class CombinedEncoder(GNNEncoder):
         # res = self.output_norm(res)
 
         if not self.training:
-            res_out = self.output_norm(res_out)
-        return res_llm, res_out, res_graph
+            if prompts:
+                res_out = self.output_norm(res_out)
+                res_llm = self.output_norm(res_llm)
+            res_graph = self.output_norm(res_graph)
+        return res_out, res_graph, res_llm
 
     def min_compare(self, output):
         one_distance = 1 - output
